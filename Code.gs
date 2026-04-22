@@ -18,12 +18,9 @@
 
 const AUTH_KEY = "CHANGE_ME_TO_A_STRONG_SECRET";
 
-// Keep browser capability headers (sec-ch-ua*, sec-fetch-*) intact.
-// Some modern apps, notably Google Meet, use them for browser gating.
 const SKIP_HEADERS = {
   host: 1, connection: 1, "content-length": 1,
   "transfer-encoding": 1, "proxy-connection": 1, "proxy-authorization": 1,
-  "priority": 1, te: 1,
 };
 
 function doPost(e) {
@@ -49,7 +46,7 @@ function _doSingle(req) {
   var resp = UrlFetchApp.fetch(req.u, opts);
   return _json({
     s: resp.getResponseCode(),
-    h: _respHeaders(resp),
+    h: resp.getHeaders(),
     b: Utilities.base64Encode(resp.getContent()),
   });
 }
@@ -84,7 +81,7 @@ function _doBatch(items) {
       var resp = responses[rIdx++];
       results.push({
         s: resp.getResponseCode(),
-        h: _respHeaders(resp),
+        h: resp.getHeaders(),
         b: Utilities.base64Encode(resp.getContent()),
       });
     }
@@ -98,7 +95,6 @@ function _buildOpts(req) {
     muteHttpExceptions: true,
     followRedirects: req.r !== false,
     validateHttpsCertificates: true,
-    escaping: false,
   };
   if (req.h && typeof req.h === "object") {
     var headers = {};
@@ -114,15 +110,6 @@ function _buildOpts(req) {
     if (req.ct) opts.contentType = req.ct;
   }
   return opts;
-}
-
-function _respHeaders(resp) {
-  try {
-    if (typeof resp.getAllHeaders === "function") {
-      return resp.getAllHeaders();
-    }
-  } catch (err) {}
-  return resp.getHeaders();
 }
 
 function doGet(e) {

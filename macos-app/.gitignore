@@ -1,0 +1,6 @@
+.build/
+.DS_Store
+bundle/shade-core
+bundle/tun2socks
+dist/
+.core-build/

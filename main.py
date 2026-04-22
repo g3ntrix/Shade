@@ -52,17 +52,6 @@ def parse_args():
         help="Override listen host (env: DFT_HOST)",
     )
     parser.add_argument(
-        "--socks5-port",
-        type=int,
-        default=None,
-        help="Override SOCKS5 listen port (env: DFT_SOCKS5_PORT)",
-    )
-    parser.add_argument(
-        "--disable-socks5",
-        action="store_true",
-        help="Disable the built-in SOCKS5 listener.",
-    )
-    parser.add_argument(
         "--log-level",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         default=None,
@@ -95,7 +84,7 @@ def main():
             config = json.load(f)
     except FileNotFoundError:
         print(f"Config not found: {config_path}")
-        print("Copy config.example.json to config.json and fill in your values.")
+        print("Create config.json and fill in your values.")
         sys.exit(1)
     except json.JSONDecodeError as e:
         print(f"Invalid JSON in config: {e}")
@@ -117,14 +106,6 @@ def main():
         config["listen_host"] = args.host
     elif os.environ.get("DFT_HOST"):
         config["listen_host"] = os.environ["DFT_HOST"]
-
-    if args.socks5_port is not None:
-        config["socks5_port"] = args.socks5_port
-    elif os.environ.get("DFT_SOCKS5_PORT"):
-        config["socks5_port"] = int(os.environ["DFT_SOCKS5_PORT"])
-
-    if args.disable_socks5:
-        config["socks5_enabled"] = False
 
     if args.log_level is not None:
         config["log_level"] = args.log_level
@@ -181,7 +162,7 @@ def main():
                  config.get("front_domain", "www.google.com"))
         script_ids = config.get("script_ids") or config.get("script_id")
         if isinstance(script_ids, list):
-            log.info("Script IDs        : %d scripts (sticky per-host)", len(script_ids))
+            log.info("Script IDs        : %d scripts (round-robin)", len(script_ids))
             for i, sid in enumerate(script_ids):
                 log.info("  [%d] %s", i + 1, sid)
         else:
@@ -211,13 +192,11 @@ def main():
         log.info("Front domain (SNI) : %s", config.get("front_domain", "?"))
         log.info("Worker host (Host) : %s", config.get("worker_host", "?"))
 
-    log.info("HTTP proxy         : %s:%d",
-             config.get("listen_host", "127.0.0.1"),
-             config.get("listen_port", 8080))
-    if config.get("socks5_enabled", True):
-        log.info("SOCKS5 proxy       : %s:%d",
-                 config.get("socks5_host", config.get("listen_host", "127.0.0.1")),
-                 config.get("socks5_port", 1080))
+    listen_host = config.get("listen_host", "127.0.0.1")
+    listen_port = config.get("listen_port", 8080)
+    socks5_port = config.get("socks5_port", listen_port + 1)
+    log.info("HTTP proxy address : %s:%d", listen_host, listen_port)
+    log.info("SOCKS5 proxy addr  : %s:%d", listen_host, socks5_port)
 
     try:
         asyncio.run(ProxyServer(config).start())

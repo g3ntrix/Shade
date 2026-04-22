@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 HTTP/2 multiplexed transport for domain-fronted connections.
 

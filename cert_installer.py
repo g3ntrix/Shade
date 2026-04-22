@@ -111,23 +111,40 @@ def _cert_thumbprint(cert_path: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _install_macos(cert_path: str, cert_name: str) -> bool:
-    """Install into the login keychain (per-user, no sudo required)."""
+    """Install into the login keychain as a trusted root.
+
+    Strategy:
+      1. Try user-domain trust (no -d flag) — works without admin.
+      2. Fall back to admin-domain trust with sudo if needed.
+    """
     login_keychain = os.path.expanduser("~/Library/Keychains/login.keychain-db")
     if not os.path.exists(login_keychain):
         login_keychain = os.path.expanduser("~/Library/Keychains/login.keychain")
 
+    # First, remove any stale entry so re-installs work cleanly.
+    try:
+        _run([
+            "security", "remove-trusted-cert",
+            "-d", cert_path,
+        ], check=False)
+    except Exception:
+        pass
+
+    # Attempt 1: user-domain trust (no admin needed).
+    # Note: omit -d so trust is set in the per-user domain.
     try:
         _run([
             "security", "add-trusted-cert",
-            "-d", "-r", "trustRoot",
+            "-r", "trustRoot",
             "-k", login_keychain,
             cert_path,
         ])
         log.info("Certificate installed in macOS login keychain.")
         return True
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        log.warning("login keychain install failed: %s. Trying system keychain (needs sudo)…", exc)
+        log.warning("User-domain trust install failed: %s. Trying admin domain (needs sudo)…", exc)
 
+    # Attempt 2: admin-domain trust via sudo (system keychain).
     try:
         _run([
             "sudo", "security", "add-trusted-cert",
@@ -143,12 +160,40 @@ def _install_macos(cert_path: str, cert_name: str) -> bool:
     return False
 
 
-def _is_trusted_macos(cert_name: str) -> bool:
-    try:
-        result = _run(["security", "find-certificate", "-a", "-c", cert_name])
-        return bool(result.stdout.strip())
-    except Exception:
+def _is_trusted_macos(cert_path: str, cert_name: str) -> bool:
+    """Return True if THIS exact cert is present AND trusted in macOS keychains."""
+    thumbprint = _cert_thumbprint(cert_path)
+    if not thumbprint:
         return False
+
+    # Quick check: does macOS itself verify the cert as trusted?
+    try:
+        _run(["security", "verify-cert", "-c", cert_path])
+        # verify-cert returns 0 only if the cert chain is trusted.
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    # Fallback: check keychain presence (weaker, but catches some edge cases).
+    keychains = [
+        os.path.expanduser("~/Library/Keychains/login.keychain-db"),
+        os.path.expanduser("~/Library/Keychains/login.keychain"),
+        "/Library/Keychains/System.keychain",
+    ]
+
+    for keychain in keychains:
+        if keychain.startswith("/") and not os.path.exists(keychain):
+            continue
+        try:
+            result = _run([
+                "security", "find-certificate", "-a", "-Z", "-c", cert_name, keychain
+            ])
+            output = result.stdout.decode(errors="replace").upper()
+            if thumbprint in output:
+                return True
+        except Exception:
+            continue
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -250,68 +295,28 @@ def _install_linux(cert_path: str, cert_name: str) -> bool:
     return installed
 
 
-def _is_trusted_linux(cert_path: str, cert_name: str = CERT_NAME) -> bool:
-    """Check whether the cert appears in common Linux trust stores."""
-    try:
-        from cryptography import x509 as _x509
-        from cryptography.hazmat.primitives import hashes as _hashes
-    except Exception:
+def _is_trusted_linux(cert_path: str) -> bool:
+    """Check if our cert thumbprint is in the system's OpenSSL trust bundle."""
+    thumbprint = _cert_thumbprint(cert_path)
+    if not thumbprint:
         return False
-
-    try:
-        with open(cert_path, "rb") as f:
-            target_cert = _x509.load_pem_x509_certificate(f.read())
-        target_fp = target_cert.fingerprint(_hashes.SHA1())
-    except Exception:
-        return False
-
-    # First check the common anchor locations used by the installer.
-    expected_name = f"{cert_name.replace(' ', '_')}.crt"
-    anchor_dirs = [
-        "/usr/local/share/ca-certificates",
-        "/etc/pki/ca-trust/source/anchors",
-        "/etc/ca-certificates/trust-source/anchors",
-    ]
-    for d in anchor_dirs:
-        try:
-            if not os.path.isdir(d):
-                continue
-            if expected_name in os.listdir(d):
-                return True
-        except OSError:
-            pass
-
-    # Fall back to scanning the system bundle files directly.
     bundle_paths = [
         "/etc/ssl/certs/ca-certificates.crt",   # Debian/Ubuntu
         "/etc/pki/tls/certs/ca-bundle.crt",     # RHEL/Fedora
         "/etc/ssl/ca-bundle.pem",               # OpenSUSE
         "/etc/ca-certificates/ca-certificates.crt",
     ]
-
-    begin = b"-----BEGIN CERTIFICATE-----"
-    end = b"-----END CERTIFICATE-----"
-    for bundle in bundle_paths:
-        try:
-            with open(bundle, "rb") as f:
-                data = f.read()
-        except OSError:
-            continue
-
-        for chunk in data.split(begin):
-            if end not in chunk:
-                continue
-            pem = begin + chunk.split(end, 1)[0] + end + b"\n"
-            try:
-                cert = _x509.load_pem_x509_certificate(pem)
-            except Exception:
-                continue
-            try:
-                if cert.fingerprint(_hashes.SHA1()) == target_fp:
+    # A fast heuristic: check if our CA cert file was copied to known dirs
+    anchor_dirs = [
+        "/usr/local/share/ca-certificates",
+        "/etc/pki/ca-trust/source/anchors",
+        "/etc/ca-certificates/trust-source/anchors",
+    ]
+    for d in anchor_dirs:
+        if os.path.isdir(d):
+            for f in os.listdir(d):
+                if "DomainFront" in f or "domainfront" in f.lower():
                     return True
-            except Exception:
-                continue
-
     return False
 
 
@@ -369,8 +374,8 @@ def is_ca_trusted(cert_path: str) -> bool:
         if system == "Windows":
             return _is_trusted_windows(cert_path)
         if system == "Darwin":
-            return _is_trusted_macos(CERT_NAME)
-        return _is_trusted_linux(cert_path, CERT_NAME)
+            return _is_trusted_macos(cert_path, CERT_NAME)
+        return _is_trusted_linux(cert_path)
     except Exception:
         return False
 
