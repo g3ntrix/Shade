@@ -10,14 +10,10 @@ APP_NAME="Shade"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 
-# 1. Make sure core + tun2socks are present (build/download if needed).
+# 1. Make sure core is present (build if needed).
 if [[ ! -x "$ROOT/bundle/shade-core" ]]; then
   echo "→ shade-core missing; building"
   "$ROOT/scripts/build-core.sh"
-fi
-if [[ ! -x "$ROOT/bundle/tun2socks" ]]; then
-  echo "→ tun2socks missing; fetching"
-  "$ROOT/scripts/fetch-tun2socks.sh"
 fi
 
 # 2. Regenerate the icon if the source changed (or it's missing).
@@ -55,9 +51,6 @@ chmod +x "$APP/Contents/MacOS/$APP_NAME"
 
 cp "$ROOT/bundle/shade-core" "$APP/Contents/Resources/shade-core"
 chmod +x "$APP/Contents/Resources/shade-core"
-
-cp "$ROOT/bundle/tun2socks" "$APP/Contents/Resources/tun2socks"
-chmod +x "$APP/Contents/Resources/tun2socks"
 
 # Copy SwiftPM-generated resource bundle (contains Shade.png/icns).
 ARM_RELEASE_DIR="$(dirname "$ARM_BIN")"
@@ -109,7 +102,6 @@ PLIST
 # embedded executables silently.
 echo "→ ad-hoc codesigning"
 codesign --force --sign - "$APP/Contents/Resources/shade-core"
-codesign --force --sign - "$APP/Contents/Resources/tun2socks"
 codesign --force --deep --sign - "$APP"
 
 echo

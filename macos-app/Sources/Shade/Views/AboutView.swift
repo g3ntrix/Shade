@@ -55,7 +55,6 @@ struct AboutView: View {
                         Text("What's inside")
                             .font(.system(size: 13, weight: .semibold))
                         BulletRow(icon: "shippingbox", text: "Bundled Python core (shade-core) — no system Python required.")
-                        BulletRow(icon: "point.3.connected.trianglepath.dotted", text: "Bundled tun2socks for system-wide tunnel mode.")
                         BulletRow(icon: "lock.shield", text: "Auto MITM CA management under ~/Library/Application Support/Shade/ca.")
                     }
                 }

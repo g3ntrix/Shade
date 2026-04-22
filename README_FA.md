@@ -2,6 +2,9 @@
 
 یک اپ سبک macOS برای عبور ترافیک از طریق Google Apps Script relay با رابط کاربری ساده.
 
+![Shade App Dashboard](macos-app/sc/app-dashboard.png)
+
+
 [English](README.md) | فارسی
 
 ## این برنامه چه کاری انجام می‌دهد

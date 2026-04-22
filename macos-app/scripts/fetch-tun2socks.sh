@@ -20,7 +20,7 @@ download () {
   local dest="$CACHE_DIR/$asset"
   if [[ ! -f "$dest" ]]; then
     echo "→ downloading $asset"
-    curl -fsSL -o "$dest" "$BASE/$asset"
+    curl -fsSL --retry 5 --http1.1 -o "$dest" "$BASE/$asset"
   fi
   echo "$dest"
 }

@@ -2,6 +2,9 @@
 
 Lightweight macOS app for routing traffic through your Google Apps Script relay with a simple desktop interface.
 
+![Shade App Dashboard](macos-app/sc/app-dashboard.png)
+
+
 English | [فارسی](README_FA.md)
 
 ## What It Does
