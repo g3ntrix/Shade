@@ -5,22 +5,24 @@ struct ContentView: View {
     @State private var tab: Tab = .dashboard
 
     enum Tab: String, CaseIterable, Identifiable {
-        case dashboard, settings, logs, about
+        case dashboard, setup, settings, logs, about
         var id: String { rawValue }
         var title: String {
             switch self {
             case .dashboard: return "Dashboard"
+            case .setup:    return "Setup Guide"
             case .settings: return "Settings"
-            case .logs: return "Logs"
-            case .about: return "About"
+            case .logs:     return "Logs"
+            case .about:    return "About"
             }
         }
         var symbol: String {
             switch self {
             case .dashboard: return "bolt.shield"
+            case .setup:    return "wand.and.stars"
             case .settings: return "slider.horizontal.3"
-            case .logs: return "text.alignleft"
-            case .about: return "info.circle"
+            case .logs:     return "text.alignleft"
+            case .about:    return "info.circle"
             }
         }
     }
@@ -35,9 +37,10 @@ struct ContentView: View {
                 Group {
                     switch tab {
                     case .dashboard: DashboardView()
+                    case .setup:    SetupView()
                     case .settings: SettingsView()
-                    case .logs: LogsView()
-                    case .about: AboutView()
+                    case .logs:     LogsView()
+                    case .about:    AboutView()
                     }
                 }
                 .padding(24)

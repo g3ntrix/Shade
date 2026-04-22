@@ -6,66 +6,59 @@ struct DashboardView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 14) {
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Shade")
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                    Text("Bypass DPI by fronting traffic through Google Apps Script — choose a profile and hit start.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                }
-
-                // ── Status / control card ────────────────────────────────
+                // ── Hero: status + power + listener endpoint ─────────────
                 Card {
-                    HStack {
-                        StatusOrb(status: app.status)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(app.status.label)
-                                .font(.system(size: 20, weight: .semibold))
-                                .lineLimit(1)
-                            Text(secondaryLabel)
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        PowerButton(isRunning: app.status.isRunning,
-                                    isBusy: app.status.isTransitioning) {
-                            Task {
-                                if app.status.isRunning { await app.stop() }
-                                else { await app.start() }
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(spacing: 14) {
+                            StatusOrb(status: app.status)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(app.status.label)
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .lineLimit(1)
+                                Text(secondaryLabel)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
                             }
+                            Spacer()
+                            PowerButton(isRunning: app.status.isRunning,
+                                        isBusy: app.status.isTransitioning) {
+                                Task {
+                                    if app.status.isRunning { await app.stop() }
+                                    else { await app.start() }
+                                }
+                            }
+                            .disabled(!canStart && !app.status.isRunning)
+                            .opacity(!canStart && !app.status.isRunning ? 0.5 : 1)
                         }
-                        .disabled(!canStart && !app.status.isRunning)
-                        .opacity(!canStart && !app.status.isRunning ? 0.5 : 1)
+
+                        Divider().opacity(0.15)
+
+                        HStack(spacing: 10) {
+                            Image(systemName: "arrow.down.forward.circle")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.cyan)
+                            Text(verbatim: listenerLine)
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 6)
+                            Text("HTTP · SOCKS5")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Capsule().fill(.white.opacity(0.08)))
+                        }
                     }
                 }
 
-                // ── Credential profile picker ────────────────────────────
+                // ── Profile ──────────────────────────────────────────────
                 CredentialsCard()
 
-                // ── Listener info ────────────────────────────────────────
-                Card {
-                    HStack(spacing: 16) {
-                        Image(systemName: "arrow.down.forward.circle")
-                            .font(.system(size: 22))
-                            .foregroundStyle(.cyan)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Point your browser / apps at")
-                                .font(.system(size: 11)).foregroundStyle(.secondary)
-                            Text(verbatim: listenerLine)
-                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                        }
-                        Spacer()
-                        Text("HTTP · SOCKS5")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(Capsule().fill(.white.opacity(0.08)))
-                    }
-                }
-
-                // ── Connectivity test (visible when running) ─────────────
+                // ── Connectivity test (only while running) ───────────────
                 if app.status.isRunning {
                     ConnectivityTestCard()
                 }
@@ -589,7 +582,7 @@ struct Card<Content: View>: View {
     @ViewBuilder var content: () -> Content
     var body: some View {
         content()
-            .padding(18)
+            .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)

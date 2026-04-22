@@ -98,11 +98,43 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# 6. Ad-hoc codesign (deep). Without this Gatekeeper refuses to launch the
-# embedded executables silently.
-echo "→ ad-hoc codesigning"
-codesign --force --sign - "$APP/Contents/Resources/shade-core"
-codesign --force --deep --sign - "$APP"
+# 6. Ad-hoc codesign with hardened runtime + entitlements.
+#
+# On Apple Silicon (M1/M2/M3), PyInstaller's onefile loader extracts and jumps
+# into dynamically-mapped code, which the hardened runtime blocks unless the
+# `allow-unsigned-executable-memory` / `allow-jit` entitlements are present.
+# Without them users see "The application can't be opened." even though the
+# binary is universal and runs fine on Intel. Sign nested binaries FIRST, then
+# the outer bundle, so every Mach-O gets the same entitlements (--deep is
+# deprecated and often leaves nested frameworks with mismatched flags).
+ENTITLEMENTS="$ROOT/scripts/entitlements.plist"
+echo "→ ad-hoc codesigning (hardened runtime, with entitlements)"
+codesign --force --sign - \
+  --options runtime \
+  --entitlements "$ENTITLEMENTS" \
+  --timestamp=none \
+  "$APP/Contents/Resources/shade-core"
+codesign --force --sign - \
+  --options runtime \
+  --entitlements "$ENTITLEMENTS" \
+  --timestamp=none \
+  "$APP/Contents/MacOS/$APP_NAME"
+codesign --force --sign - \
+  --options runtime \
+  --entitlements "$ENTITLEMENTS" \
+  --timestamp=none \
+  "$APP"
+
+# Strip quarantine attr from the freshly-built bundle so local runs don't
+# hit Gatekeeper. (Downloaded DMGs still need `xattr -cr` on the user end —
+# see README for the one-liner.)
+xattr -cr "$APP" 2>/dev/null || true
+
+# Verify the signature covers every nested binary.
+codesign --verify --deep --strict --verbose=2 "$APP" || {
+  echo "error: codesign verification failed — app will not launch on M-series Macs" >&2
+  exit 1
+}
 
 echo
 echo "✔ built: $APP"
