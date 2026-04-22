@@ -22,7 +22,7 @@ final class AppState: ObservableObject {
         }
         var label: String {
             switch self {
-            case .stopped:        return "Stopped"
+            case .stopped:        return "Ready to connect"
             case .starting:       return "Starting…"
             case .running:        return "Running"
             case .stopping:       return "Stopping…"

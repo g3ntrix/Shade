@@ -10,6 +10,7 @@ final class CoreManager {
 
     private var process: Process?
     private var pipe: Pipe?
+    private var userInitiatedStop = false
     private let store = ConfigStore()
 
     /// Waits for `host:socksPort` to accept TCP. Returns true when the core
@@ -74,15 +75,26 @@ final class CoreManager {
 
         p.terminationHandler = { [weak self] proc in
             out.fileHandleForReading.readabilityHandler = nil
-            self?.process = nil
-            self?.pipe = nil
-            if proc.terminationStatus != 0 {
-                let msg = "[shade-core exited with status \(proc.terminationStatus)]"
-                self?.onLog?(LogLine(timestamp: Date(), stream: .stderr, text: msg + "\n"))
-                self?.onStatus?(.error("Core exited (\(proc.terminationStatus))"))
-            } else {
-                self?.onStatus?(.stopped)
+            guard let self else { return }
+            self.process = nil
+            self.pipe = nil
+
+            // Any stop we initiated — or any SIGTERM/SIGKILL — is a clean
+            // shutdown, not an error. This prevents the "Core exited (15)"
+            // banner after the user clicks Stop (SIGTERM = 15).
+            let initiated = self.userInitiatedStop
+            self.userInitiatedStop = false
+            let status = proc.terminationStatus
+            let isCleanSignal = proc.terminationReason == .uncaughtSignal
+                && (status == SIGTERM || status == SIGKILL)
+            if initiated || status == 0 || isCleanSignal {
+                self.onStatus?(.stopped)
+                return
             }
+
+            let msg = "[shade-core exited with status \(status)]"
+            self.onLog?(LogLine(timestamp: Date(), stream: .stderr, text: msg + "\n"))
+            self.onStatus?(.error("Core exited (\(status))"))
         }
 
         out.fileHandleForReading.readabilityHandler = { [weak self] handle in
@@ -114,6 +126,7 @@ final class CoreManager {
 
     func stop() async {
         if let p = process, p.isRunning {
+            userInitiatedStop = true
             p.terminate()
             for _ in 0 ..< 20 {
                 if process == nil { break }
