@@ -35,7 +35,6 @@ Thumbs.db
 # Temp MITM certs
 domainfront_certs_*/
 
-other app 
 
 # macOS app build artifacts
 macos-app/.build/
@@ -45,3 +44,5 @@ macos-app/bundle/shade-core
 macos-app/bundle/tun2socks
 macos-app/dist/
 temp
+macos-app/scripts/
+
