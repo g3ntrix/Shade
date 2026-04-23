@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 
-log = logging.getLogger("CertInstaller")
+log = logging.getLogger("Cert")
 
 CERT_NAME = "MasterHttpRelayVPN"
 

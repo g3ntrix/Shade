@@ -16,11 +16,12 @@ Requires: pip install h2
 """
 
 import asyncio
-import gzip
 import logging
 import socket
 import ssl
 from urllib.parse import urlparse
+
+import codec
 
 log = logging.getLogger("H2")
 
@@ -62,10 +63,15 @@ class H2Transport:
     """
 
     def __init__(self, connect_host: str, sni_host: str,
-                 verify_ssl: bool = True):
+                 verify_ssl: bool = True,
+                 sni_hosts: list[str] | None = None):
         self.connect_host = connect_host
         self.sni_host = sni_host
         self.verify_ssl = verify_ssl
+        # Optional SNI rotation pool — picked round-robin on each new connect.
+        # Falls back to the single sni_host if no pool is given.
+        self._sni_hosts: list[str] = [h for h in (sni_hosts or []) if h] or [sni_host]
+        self._sni_idx: int = 0
 
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -107,6 +113,12 @@ class H2Transport:
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
 
+        # Pick next SNI from the rotation pool so repeated reconnects
+        # don't fingerprint as "always www.google.com".
+        sni = self._sni_hosts[self._sni_idx % len(self._sni_hosts)]
+        self._sni_idx += 1
+        self.sni_host = sni  # kept for backward-compat logging
+
         # Create raw TCP socket with TCP_NODELAY BEFORE TLS handshake.
         # Nagle's algorithm can delay small writes (H2 frames) by up to 200ms
         # waiting to coalesce — TCP_NODELAY forces immediate send.
@@ -124,7 +136,7 @@ class H2Transport:
             self._reader, self._writer = await asyncio.wait_for(
                 asyncio.open_connection(
                     ssl=ctx,
-                    server_hostname=self.sni_host,
+                    server_hostname=sni,
                     sock=raw,
                 ),
                 timeout=15,
@@ -152,9 +164,11 @@ class H2Transport:
         # Connection-level flow control: ~16MB window
         self._h2.increment_flow_control_window(2 ** 24 - 65535)
 
-        # Per-stream settings: 1MB initial window, disable server push
+        # Per-stream settings: 8MB initial window (covers all typical relay
+        # request bodies in one shot so we never have to stall for a
+        # WINDOW_UPDATE mid-send). Disable server push.
         self._h2.update_settings({
-            h2.settings.SettingCodes.INITIAL_WINDOW_SIZE: 1 * 1024 * 1024,
+            h2.settings.SettingCodes.INITIAL_WINDOW_SIZE: 8 * 1024 * 1024,
             h2.settings.SettingCodes.ENABLE_PUSH: 0,
         })
 
@@ -163,7 +177,7 @@ class H2Transport:
         self._connected = True
         self._read_task = asyncio.create_task(self._reader_loop())
         log.info("H2 connected → %s (SNI=%s, TCP_NODELAY=on)",
-                 self.connect_host, self.sni_host)
+                 self.connect_host, sni)
 
     async def reconnect(self):
         """Close current connection and re-establish."""
@@ -247,7 +261,7 @@ class H2Transport:
                 (":path", path),
                 (":authority", host),
                 (":scheme", "https"),
-                ("accept-encoding", "gzip"),
+                ("accept-encoding", codec.supported_encodings()),
             ]
             if headers:
                 for k, v in headers.items():
@@ -280,30 +294,37 @@ class H2Transport:
         if state.error:
             raise ConnectionError(f"H2 stream error: {state.error}")
 
-        # Auto-decompress gzip
+        # Auto-decompress (gzip / deflate / brotli / zstd)
         resp_body = bytes(state.data)
-        if state.headers.get("content-encoding", "").lower() == "gzip":
-            try:
-                resp_body = gzip.decompress(resp_body)
-            except Exception:
-                pass
+        enc = state.headers.get("content-encoding", "")
+        if enc:
+            resp_body = codec.decode(resp_body, enc)
 
         return state.status, state.headers, resp_body
 
     def _send_body(self, stream_id: int, body: bytes):
-        """Send request body, respecting H2 flow control window."""
-        # For small bodies (typical JSON payloads), send in one shot
+        """Send request body, respecting H2 flow control window.
+
+        The initial per-stream window is 8 MB (see _do_connect) which
+        comfortably covers all relay JSON payloads. If the body is ever
+        larger than the available window, we raise rather than silently
+        truncate — the caller will retry on a fresh connection.
+        """
+        sent = 0
+        total = len(body)
         while body:
             max_size = self._h2.local_settings.max_frame_size
             window = self._h2.local_flow_control_window(stream_id)
             send_size = min(len(body), max_size, window)
             if send_size <= 0:
-                # Flow control full — let the reader loop process
-                # window updates before we continue
-                break
+                raise BufferError(
+                    f"H2 flow control exhausted after {sent}/{total} bytes; "
+                    f"increase initial window or shrink payload"
+                )
             end = send_size >= len(body)
             self._h2.send_data(stream_id, body[:send_size], end_stream=end)
             body = body[send_size:]
+            sent += send_size
 
     # ── Background reader ─────────────────────────────────────────
 
