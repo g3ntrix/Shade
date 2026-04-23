@@ -95,23 +95,28 @@ class DomainFronter:
         )
         self._sni_idx = 0
         self.http_host = "script.google.com"
-        # Multi-script round-robin for higher throughput
-        script = config.get("script_ids") or config.get("script_id")
-        self._script_ids = script if isinstance(script, list) else [script]
+        # Multi-script configuration for load balancing
+        self._script_configs = config.get("script_configs", [])
+        if not self._script_configs:
+            # Fallback for legacy single script_id / auth_key
+            script = config.get("script_ids") or config.get("script_id")
+            sids = script if isinstance(script, list) else [script]
+            key = config.get("auth_key", "")
+            self._script_configs = [{"id": sid, "key": key} for sid in sids]
+        
+        self._script_ids = [c["id"] for c in self._script_configs]
+        self._script_keys = {c["id"]: c["key"] for c in self._script_configs}
+        
         self._script_idx = 0
-        self.script_id = self._script_ids[0]  # backward compat / logging
-        self._dev_available = False  # True if /dev endpoint works (no redirect, ~400ms faster)
+        self.script_id = self._script_ids[0] if self._script_ids else "none"
+        self._dev_available = False
 
-        # Fan-out parallel relay: fire N Apps Script instances concurrently,
-        # keep the first successful response, cancel the rest. Script IDs
-        # that fail or time out get blacklisted for SCRIPT_BLACKLIST_TTL so
-        # a single slow container stops poisoning tail latency.
         try:
             self._parallel_relay = int(config.get("parallel_relay", 1))
         except (TypeError, ValueError):
             self._parallel_relay = 1
-        self._parallel_relay = max(1, min(self._parallel_relay,
-                                          len(self._script_ids)))
+        self._parallel_relay = max(1, min(self._parallel_relay, len(self._script_ids) or 1))
+
         self._sid_blacklist: dict[str, float] = {}
         self._blacklist_ttl = SCRIPT_BLACKLIST_TTL
 
@@ -613,7 +618,9 @@ class DomainFronter:
                 await self._h2.ping()
 
                 # Apps Script keepalive — warm the container
-                payload = {"m": "HEAD", "u": "http://example.com/", "k": self.auth_key}
+                sid = self._script_ids[0] if self._script_ids else ""
+                key = self._script_keys.get(sid, self.auth_key)
+                payload = {"m": "HEAD", "u": "http://example.com/", "k": key}
                 path = self._exec_path()
                 t0 = time.perf_counter()
                 await asyncio.wait_for(
@@ -640,7 +647,9 @@ class DomainFronter:
         log.info("Pre-warmed %d/%d TLS connections", opened, count)
 
     def _auth_header(self) -> str:
-        return f"X-Auth-Key: {self.auth_key}\r\n" if self.auth_key else ""
+        # Use first key for general H1 pool pre-warming
+        key = self._script_keys.get(self._script_ids[0]) if self._script_ids else self.auth_key
+        return f"X-Auth-Key: {key}\r\n" if key else ""
 
     # ── Apps Script relay (apps_script mode) ──────────────────────
 
@@ -998,7 +1007,7 @@ class DomainFronter:
                 self._spawn(self._batch_send(batch))
 
     async def _batch_send(self, batch: list):
-        """Send a batch of requests. Uses fetchAll for multi, single for one."""
+        """Send a batch of requests. Groups by SID to use correct auth keys."""
         if len(batch) == 1:
             payload, future = batch[0]
             try:
@@ -1009,20 +1018,24 @@ class DomainFronter:
                 if not future.done():
                     future.set_result(self._error_response(502, str(e)))
         else:
-            log.info("Batch relay: %d requests", len(batch))
-            try:
-                results = await self._relay_batch([p for p, _ in batch])
-                for (_, future), result in zip(batch, results):
-                    if not future.done():
-                        future.set_result(result)
-            except Exception as e:
-                log.warning("Batch relay failed, disabling batch mode. "
-                            "Redeploy Code.gs for batch support. Error: %s", e)
-                self._batch_enabled = False
-                # Fallback: send individually
-                tasks = []
-                for payload, future in batch:
-                    tasks.append(self._relay_fallback(payload, future))
+            # Group by SID so we can use the correct password for each script
+            groups: dict[str, list[tuple[dict, asyncio.Future]]] = {}
+            for payload, future in batch:
+                sid = self._script_id_for_key(self._host_key(payload.get("u")))
+                groups.setdefault(sid, []).append((payload, future))
+                
+            for sid, group in groups.items():
+                log.info("Batch relay: %d requests to script %s", len(group), sid[-8:])
+                try:
+                    results = await self._relay_batch([p for p, _ in group], sid=sid)
+                    for (_, future), result in zip(group, results):
+                        if not future.done():
+                            future.set_result(result)
+                except Exception as e:
+                    log.warning("Batch relay to %s failed: %s", sid[-8:], e)
+                    # Fallback: send individually
+                    for payload, future in group:
+                        self._spawn(self._relay_fallback(payload, future))
                 await asyncio.gather(*tasks)
 
     async def _relay_fallback(self, payload, future):
@@ -1134,16 +1147,17 @@ class DomainFronter:
                 await asyncio.gather(*pending, return_exceptions=True)
 
     async def _relay_single_h2(self, payload: dict) -> bytes:
-        """Execute a relay through HTTP/2 multiplexing.
+        """Execute a relay through HTTP/2 multiplexing."""
+        sid = self._script_id_for_key(self._host_key(payload.get("u")))
+        return await self._relay_single_h2_with_sid(payload, sid)
 
-        Uses the shared H2 connection — no pool checkout needed.
-        Many concurrent calls all share one TLS connection.
-        """
+    async def _relay_single_h2_with_sid(self, payload: dict, sid: str) -> bytes:
+        """Execute an H2 relay pinned to a specific Apps Script deployment."""
         full_payload = dict(payload)
-        full_payload["k"] = self.auth_key
+        full_payload["k"] = self._script_keys.get(sid, "")
         json_body = json.dumps(full_payload).encode()
 
-        path = self._exec_path()
+        path = self._exec_path_for_sid(sid)
 
         status, headers, body = await self._h2.request(
             method="POST", path=path, host=self.http_host,
@@ -1153,15 +1167,10 @@ class DomainFronter:
 
         return self._parse_relay_response(body)
 
-    async def _relay_single_h2_with_sid(self, payload: dict,
-                                        sid: str) -> bytes:
-        """Execute an H2 relay pinned to a specific Apps Script deployment.
-
-        Used by `_relay_fanout` to race multiple script IDs in parallel.
-        Mirrors `_relay_single_h2` but ignores the stable-hash routing.
-        """
+    async def _relay_single_h2_with_sid(self, payload: dict, sid: str) -> bytes:
+        """Execute an H2 relay pinned to a specific Apps Script deployment."""
         full_payload = dict(payload)
-        full_payload["k"] = self.auth_key
+        full_payload["k"] = self._script_keys.get(sid, "")
         json_body = json.dumps(full_payload).encode()
 
         path = self._exec_path_for_sid(sid)
@@ -1176,12 +1185,14 @@ class DomainFronter:
 
     async def _relay_single(self, payload: dict) -> bytes:
         """Execute a single relay POST → redirect → parse."""
-        # Add auth key
+        sid = self._script_id_for_key(self._host_key(payload.get("u")))
+        key = self._script_keys.get(sid, "")
+
         full_payload = dict(payload)
-        full_payload["k"] = self.auth_key
+        full_payload["k"] = key
         json_body = json.dumps(full_payload).encode()
 
-        path = self._exec_path()
+        path = self._exec_path_for_sid(sid)
         reader, writer, created = await self._acquire()
 
         try:
@@ -1230,14 +1241,18 @@ class DomainFronter:
                 pass
             raise
 
-    async def _relay_batch(self, payloads: list[dict]) -> list[bytes]:
+    async def _relay_batch(self, payloads: list[dict], sid: str | None = None) -> list[bytes]:
         """Send multiple requests in one POST using Apps Script fetchAll."""
+        if not sid:
+            sid = self._script_id_for_key(None)
+            
+        key = self._script_keys.get(sid, "")
         batch_payload = {
-            "k": self.auth_key,
+            "k": key,
             "q": payloads,
         }
         json_body = json.dumps(batch_payload).encode()
-        path = self._exec_path()
+        path = self._exec_path_for_sid(sid)
 
         # Try HTTP/2 first
         if self._h2 and self._h2.is_connected:

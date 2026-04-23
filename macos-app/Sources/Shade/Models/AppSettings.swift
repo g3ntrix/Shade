@@ -119,18 +119,25 @@ struct AppSettings: Codable, Equatable {
 
     func makeCoreConfig() -> [String: Any] {
         let cred = activeCredential
+        
+        // Prepare list of all credentials for load balancing
+        let scriptConfigs = credentials.map { cred in
+            ["id": cred.scriptID, "key": cred.authKey]
+        }.filter { !($0["id"]?.isEmpty ?? true) }
+
         var dict: [String: Any] = [
-            "mode":         "apps_script",
-            "google_ip":    googleIP,
-            "front_domain": frontDomain,
-            "script_id":    cred?.scriptID ?? "",
-            "auth_key":     cred?.authKey  ?? "",
-            "listen_host":  listenHost,
-            "listen_port":  listenPort,
-            "socks5_host":  listenHost,
-            "socks5_port":  socksPort,
-            "log_level":    logLevel.rawValue,
-            "verify_ssl":   verifySSL
+            "mode":           "apps_script",
+            "google_ip":      googleIP,
+            "front_domain":   frontDomain,
+            "script_id":      cred?.scriptID ?? "",
+            "auth_key":       cred?.authKey  ?? "",
+            "script_configs": scriptConfigs,
+            "listen_host":    listenHost,
+            "listen_port":    listenPort,
+            "socks5_host":    listenHost,
+            "socks5_port":    socksPort,
+            "log_level":      logLevel.rawValue,
+            "verify_ssl":     verifySSL
         ]
         dict = dict.compactMapValues { value -> Any? in
             if let s = value as? String { return s.isEmpty ? nil : s }
