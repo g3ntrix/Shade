@@ -3,7 +3,7 @@ import AppKit
 
 struct AboutView: View {
     private var appVersionText: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.2"
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1.0"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
         return "Version \(short) • Build \(build)"
     }

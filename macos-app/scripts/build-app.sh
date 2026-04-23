@@ -68,7 +68,7 @@ if [[ -f "$ROOT/Sources/Shade/Resources/Shade.icns" ]]; then
 fi
 
 # 5. Info.plist
-VERSION="${VERSION:-1.0.2}"
+VERSION="${VERSION:-1.1.0}"
 ICON_ENTRY=""
 if [[ -f "$APP/Contents/Resources/Shade.icns" ]]; then
   ICON_ENTRY="<key>CFBundleIconFile</key><string>Shade</string>"

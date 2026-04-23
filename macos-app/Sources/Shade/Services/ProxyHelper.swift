@@ -13,7 +13,7 @@ import AppKit
 enum ProxyHelper {
     static let sudoersPath = "/etc/sudoers.d/shade-proxy"
     static let helperPath  = "/usr/local/bin/shade-proxy"
-    static let helperVersion = "1.0.0"
+    static let helperVersion = "1.1.0"
 
     enum HelperError: LocalizedError {
         case promptCancelled
