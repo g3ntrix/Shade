@@ -68,7 +68,7 @@ if [[ -f "$ROOT/Sources/Shade/Resources/Shade.icns" ]]; then
 fi
 
 # 5. Info.plist
-VERSION="${VERSION:-1.0.0}"
+VERSION="${VERSION:-1.0.2}"
 ICON_ENTRY=""
 if [[ -f "$APP/Contents/Resources/Shade.icns" ]]; then
   ICON_ENTRY="<key>CFBundleIconFile</key><string>Shade</string>"
@@ -92,7 +92,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSSupportsAutomaticTermination</key><false/>
     <key>NSSupportsSuddenTermination</key><false/>
     <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
-    <key>NSHumanReadableCopyright</key><string>Shade — MasterHttpRelayVPN client</string>
+    <key>NSHumanReadableCopyright</key><string>MasterHttpRelayVPN client - by g3ntrix</string>
     $ICON_ENTRY
 </dict>
 </plist>

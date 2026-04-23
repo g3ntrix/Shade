@@ -216,6 +216,35 @@ final class AppState: ObservableObject {
 
     func clearLogs() { logs.removeAll() }
 
+    // MARK: - Manual certificate repair
+
+    func repairCertificateNow() async -> String {
+        append(LogLine(timestamp: Date(), stream: .system,
+            text: "↻ Manual certificate repair requested.\n"))
+
+        let result = await CertManager.reinstallFreshCertificate()
+        switch result {
+        case .installedOK:
+            hasShownCertRestartSucceeded = false
+            append(LogLine(timestamp: Date(), stream: .system,
+                text: "✓ Certificate refreshed — restart your browser to apply.\n"))
+            return "Certificate refreshed. Restart your browser and retry."
+        case .alreadyTrusted:
+            hasShownCertRestartSucceeded = true
+            append(LogLine(timestamp: Date(), stream: .system,
+                text: "✓ Certificate is already trusted.\n"))
+            return "Certificate is already trusted."
+        case .cancelled:
+            append(LogLine(timestamp: Date(), stream: .system,
+                text: "⚠ Certificate repair cancelled by user.\n"))
+            return "Certificate repair cancelled."
+        case .failed(let reason):
+            append(LogLine(timestamp: Date(), stream: .system,
+                text: "⚠ Certificate repair failed: \(reason)\n"))
+            return Self.shorten("Certificate repair failed: \(reason)")
+        }
+    }
+
     // MARK: - YouTube connectivity test
 
     func testYouTubeDelay() async {
@@ -224,7 +253,34 @@ final class AppState: ObservableObject {
         let socksPort = activeSOCKSPort > 0 ? activeSOCKSPort : settings.socksPort
         let host = settings.listenHost == "0.0.0.0" ? "127.0.0.1" : settings.listenHost
 
-        let result: TestResult = await Task.detached {
+        var result = await runYouTubeProbe(host: host, socksPort: socksPort)
+        if case .failure(let msg) = result, CertManager.looksLikeTLSIssue(msg) {
+            append(LogLine(timestamp: Date(), stream: .system,
+                text: "⚠ TLS/certificate error detected — refreshing certificate and retrying test.\n"))
+            let refresh = await CertManager.reinstallFreshCertificate()
+            switch refresh {
+            case .installedOK:
+                append(LogLine(timestamp: Date(), stream: .system,
+                    text: "✓ Certificate refreshed — retrying YouTube test.\n"))
+                result = await runYouTubeProbe(host: host, socksPort: socksPort)
+            case .alreadyTrusted:
+                result = await runYouTubeProbe(host: host, socksPort: socksPort)
+            case .cancelled:
+                result = .failure("TLS fix cancelled")
+            case .failed(let reason):
+                result = .failure(Self.shorten("TLS fix failed: \(reason)"))
+            }
+        }
+
+        testResult = result
+        Task {
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            if testResult == result { testResult = .idle }
+        }
+    }
+
+    private func runYouTubeProbe(host: String, socksPort: Int) async -> TestResult {
+        await Task.detached {
             let start = CFAbsoluteTimeGetCurrent()
             let url = URL(string: "https://www.youtube.com/generate_204")!
             var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
@@ -241,25 +297,19 @@ final class AppState: ObservableObject {
 
             let session = URLSession(configuration: config)
             do {
-                let (_, response) = try await session.data(for: request)
+                let (_, _) = try await session.data(for: request)
                 let ms = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
-                if let http = response as? HTTPURLResponse,
-                   (200..<400).contains(http.statusCode) {
-                    return .success(ms: ms)
-                }
                 return .success(ms: ms)
             } catch {
-                let msg = error.localizedDescription
-                return .failure(msg.count > 60 ? String(msg.prefix(60)) + "…" : msg)
+                return .failure(Self.shorten(error.localizedDescription))
             }
         }.value
-
-        testResult = result
-        Task {
-            try? await Task.sleep(nanoseconds: 8_000_000_000)
-            if testResult == result { testResult = .idle }
-        }
     }
+
+    private nonisolated static func shorten(_ message: String) -> String {
+        message.count > 60 ? String(message.prefix(60)) + "…" : message
+    }
+
 }
 
 struct LogLine: Identifiable, Equatable {

@@ -15,6 +15,7 @@ REPO_ROOT="$(cd "$ROOT/.." && pwd)"
 BUILD_DIR="$ROOT/.core-build"
 BUNDLE_DIR="$ROOT/bundle"
 OUT="$BUNDLE_DIR/shade-core"
+REQUIRE_UNIVERSAL="${REQUIRE_UNIVERSAL:-0}"
 
 mkdir -p "$BUNDLE_DIR"
 rm -rf "$BUILD_DIR"
@@ -34,23 +35,53 @@ if [[ -z "$HOST_PYTHON" ]]; then
   exit 1
 fi
 
+supports_arch () {
+  local bin="$1"
+  local arch="$2"
+  /usr/bin/lipo -archs "$bin" 2>/dev/null | tr ' ' '\n' | grep -qx "$arch"
+}
+
+run_for_arch () {
+  local arch="$1"
+  shift
+  if [[ "$arch" == "$HOST_ARCH" ]]; then
+    "$@"
+  else
+    arch -"$arch" "$@"
+  fi
+}
+
 OTHER_PYTHON="${OTHER_PYTHON:-}"
 # Try to guess an opposite-arch python3 if not set.
 if [[ -z "$OTHER_PYTHON" ]]; then
+  if supports_arch "$HOST_PYTHON" "$OTHER_ARCH"; then
+    OTHER_PYTHON="$HOST_PYTHON"
+  fi
+
   # On arm64 macs, Rosetta python from x86_64 homebrew is a common choice.
   for cand in \
     "/usr/local/bin/python3" \
     "/opt/homebrew/bin/python3" \
     "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3" \
     "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3"; do
+    [[ -n "$OTHER_PYTHON" ]] && break
     if [[ -x "$cand" ]]; then
-      arch_of="$(/usr/bin/file -b "$cand" | grep -o 'arm64\|x86_64' | head -1 || true)"
-      if [[ "$arch_of" == "$OTHER_ARCH" ]]; then
+      if supports_arch "$cand" "$OTHER_ARCH"; then
         OTHER_PYTHON="$cand"
         break
       fi
     fi
   done
+fi
+
+if [[ -n "$OTHER_PYTHON" ]] && ! supports_arch "$OTHER_PYTHON" "$OTHER_ARCH"; then
+  echo "⚠︎  OTHER_PYTHON does not include $OTHER_ARCH: $OTHER_PYTHON"
+  OTHER_PYTHON=""
+fi
+
+if [[ -n "$OTHER_PYTHON" ]] && [[ "$OTHER_ARCH" != "$HOST_ARCH" ]] && ! arch -"$OTHER_ARCH" /usr/bin/true >/dev/null 2>&1; then
+  echo "⚠︎  Host cannot execute $OTHER_ARCH binaries; skipping universal build on this machine."
+  OTHER_PYTHON=""
 fi
 
 build_for_arch () {
@@ -61,19 +92,19 @@ build_for_arch () {
   mkdir -p "$work"
 
   echo "→ [$arch] creating venv using $py"
-  arch -"$arch" "$py" -m venv "$work/venv"
+  run_for_arch "$arch" "$py" -m venv "$work/venv"
   local vpy="$work/venv/bin/python"
 
   echo "→ [$arch] installing deps"
-  arch -"$arch" "$vpy" -m pip install --quiet --upgrade pip wheel
+  run_for_arch "$arch" "$vpy" -m pip install --quiet --upgrade pip wheel
   # Upstream runtime deps + PyInstaller.
-  arch -"$arch" "$vpy" -m pip install --quiet \
+  run_for_arch "$arch" "$vpy" -m pip install --quiet \
     "cryptography>=41" "h2>=4.1" "pyinstaller>=6.0"
 
   echo "→ [$arch] running PyInstaller"
   # --onefile for a single binary. --collect-all cryptography pulls in the
   # runtime wheels pyinstaller sometimes misses on universal builds.
-  arch -"$arch" "$vpy" -m PyInstaller \
+  run_for_arch "$arch" "$vpy" -m PyInstaller \
     --noconfirm \
     --clean \
     --onefile \
@@ -106,6 +137,11 @@ if [[ -n "$OTHER_PYTHON" ]]; then
   echo "→ lipo → $OUT"
   lipo -create "$HOST_BIN" "$OTHER_BIN" -output "$OUT"
 else
+  if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
+    echo "error: universal shade-core required, but no runnable $OTHER_ARCH python was found." >&2
+    echo "       Provide OTHER_PYTHON=/path/to/$OTHER_ARCH/python3 or build on Apple Silicon with Rosetta." >&2
+    exit 1
+  fi
   echo "⚠︎  No $OTHER_ARCH python3 found — building single-arch ($HOST_ARCH) only."
   echo "    Set OTHER_PYTHON=/path/to/$OTHER_ARCH/python3 to build universal."
   HOST_BIN="$(build_for_arch "$HOST_ARCH" "$HOST_PYTHON" | tail -1)"

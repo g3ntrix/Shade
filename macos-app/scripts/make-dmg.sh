@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/dist/Shade.app"
-VERSION="${VERSION:-1.0.0}"
+VERSION="${VERSION:-1.0.2}"
 DMG="$ROOT/dist/Shade-$VERSION.dmg"
 STAGING="$ROOT/dist/dmg-staging"
 VOL_NAME="${VOL_NAME:-Shade}"

@@ -7,6 +7,7 @@ import AppKit
 /// shade-core writes the CA to Application Support/Shade/ca/ca.crt on first
 /// start. Swift handles the trust install so there's no sudo/TTY problem.
 enum CertManager {
+    private static let certCommonName = "MasterHttpRelayVPN"
 
     static var caPath: String {
         let base = FileManager.default.urls(
@@ -25,7 +26,7 @@ enum CertManager {
         if runSecurity(["verify-cert", "-c", caPath]) == 0 { return true }
 
         // Fallback: check system keychain presence (cert added via add-trusted-cert).
-        if runSecurity(["find-certificate", "-a", "-c", "MasterHttpRelayVPN",
+        if runSecurity(["find-certificate", "-a", "-c", certCommonName,
                         "/Library/Keychains/System.keychain"]) == 0 { return true }
 
         return false
@@ -48,30 +49,63 @@ enum CertManager {
         }
         if isTrusted() { return .alreadyTrusted }
 
-        // Shell command — single-quote the path to handle spaces
-        let escapedPath = caPath.replacingOccurrences(of: "'", with: "'\\''")
-        let shellCmd = "/usr/bin/security add-trusted-cert -d -r trustRoot "
-            + "-k /Library/Keychains/System.keychain '\(escapedPath)'"
-        let appleScriptSource = """
-        do shell script "\(escape(shellCmd))" \
-            with administrator privileges \
-            with prompt "Shade needs to install its MITM root certificate so HTTPS traffic can be proxied correctly. This is a one-time step."
-        """
+        return await installIntoSystemKeychain(removingExisting: false)
+    }
 
-        return await Task.detached(priority: .userInitiated) {
-            var errDict: NSDictionary?
-            guard let script = NSAppleScript(source: appleScriptSource) else {
-                return InstallResult.failed("AppleScript init failed")
+    /// Removes all existing MasterHttpRelayVPN certs from user + system
+    /// keychains and installs a fresh CA copy into the System keychain.
+    static func reinstallFreshCertificate() async -> InstallResult {
+        guard FileManager.default.fileExists(atPath: caPath) else {
+            return .failed("CA cert not yet written by core")
+        }
+
+        purgeFromUserKeychains()
+        return await installIntoSystemKeychain(removingExisting: true)
+    }
+
+    static func looksLikeTLSIssue(_ message: String) -> Bool {
+        let lowered = message.lowercased()
+        return lowered.contains("tls")
+            || lowered.contains("ssl")
+            || lowered.contains("certificate")
+            || lowered.contains("cert")
+            || lowered.contains("secure connection")
+    }
+
+    private static func installIntoSystemKeychain(removingExisting: Bool) async -> InstallResult {
+        // Step 1: Ensure the privileged helper is ready.
+        // The helper allows us to run 'security' as root without triggering interaction errors.
+        if !SudoPrivilege.isInstalled() {
+            do {
+                try SudoPrivilege.install()
+            } catch {
+                return .failed("Failed to install admin helper: \(error.localizedDescription)")
             }
-            _ = script.executeAndReturnError(&errDict)
-            if let e = errDict {
-                let code = (e[NSAppleScript.errorNumber] as? Int) ?? 0
-                if code == -128 { return InstallResult.cancelled }
-                let msg = (e[NSAppleScript.errorMessage] as? String) ?? "unknown error"
-                return InstallResult.failed(msg)
+        }
+
+        // Step 2: Use the helper to install the cert.
+        // This runs 'sudo -n /usr/local/bin/shade-tun cert-install ...'
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        p.arguments = ["-n", SudoPrivilege.tunHelperPath, "cert-install", caPath, certCommonName]
+        
+        let sink = Pipe()
+        p.standardOutput = sink
+        p.standardError = sink
+        
+        do {
+            try p.run()
+            p.waitUntilExit()
+            
+            if !isTrusted() {
+                // If it still failed, the helper might have timed out or had an issue.
+                // Fallback to the explicit prompt if necessary, but the helper is usually enough.
+                return .failed("Admin helper could not apply trust settings.")
             }
-            return InstallResult.installedOK
-        }.value
+            return .installedOK
+        } catch {
+            return .failed("Admin helper execution failed: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Helpers
@@ -85,6 +119,63 @@ enum CertManager {
         p.standardError = sink
         do { try p.run(); p.waitUntilExit() } catch { return -1 }
         return p.terminationStatus
+    }
+
+    private static func runSecurityOutput(_ args: [String]) -> (Int32, String) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        p.arguments = args
+        let sink = Pipe()
+        p.standardOutput = sink
+        p.standardError = sink
+        do {
+            try p.run()
+            p.waitUntilExit()
+        } catch {
+            return (-1, "")
+        }
+        let out = String(data: sink.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return (p.terminationStatus, out)
+    }
+
+    private static func purgeFromUserKeychains() {
+        let keychains = userKeychains()
+        for keychain in keychains {
+            while runSecurity(["delete-certificate", "-c", certCommonName, keychain]) == 0 {
+                continue
+            }
+        }
+    }
+
+    private static func userKeychains() -> [String] {
+        let (status, out) = runSecurityOutput(["list-keychains", "-d", "user"])
+        var items: [String] = []
+        if status == 0 {
+            for raw in out.split(separator: "\n") {
+                var line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if line.hasPrefix("\"") && line.hasSuffix("\"") && line.count >= 2 {
+                    line.removeFirst()
+                    line.removeLast()
+                }
+                if line.hasPrefix("~/") {
+                    line = NSHomeDirectory() + "/" + String(line.dropFirst(2))
+                }
+                if !line.isEmpty { items.append(line) }
+            }
+        }
+
+        let defaults = [
+            NSHomeDirectory() + "/Library/Keychains/login.keychain-db",
+            NSHomeDirectory() + "/Library/Keychains/login.keychain"
+        ]
+        for path in defaults where !items.contains(path) {
+            items.append(path)
+        }
+        return items
+    }
+
+    private static func shellSingleQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private static func escape(_ s: String) -> String {

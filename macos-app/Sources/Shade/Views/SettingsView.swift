@@ -4,6 +4,8 @@ struct SettingsView: View {
     @EnvironmentObject var app: AppState
     @State private var draft: AppSettings = .default
     @State private var saved = false
+    @State private var isRepairingCert = false
+    @State private var certRepairStatus = ""
 
     var body: some View {
         ScrollView {
@@ -55,29 +57,81 @@ struct SettingsView: View {
                     }
                 }
 
-                // ── Advanced ──────────────────────────────────────────────
-                SettingsCard(title: "Advanced", icon: "slider.horizontal.3") {
-                    HStack(spacing: 20) {
-                        SField(label: "Log Level") {
-                            Picker("", selection: $draft.logLevel) {
-                                ForEach(AppSettings.LogLevel.allCases) { l in
-                                    Text(l.rawValue).tag(l)
+                HStack(alignment: .top, spacing: 20) {
+                    // ── Advanced ──────────────────────────────────────────────
+                    SettingsCard(title: "Advanced", icon: "slider.horizontal.3") {
+                        VStack(spacing: 12) {
+                            HStack {
+                                Text("Log Level")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Picker("", selection: $draft.logLevel) {
+                                    ForEach(AppSettings.LogLevel.allCases) { l in
+                                        Text(l.rawValue).tag(l)
+                                    }
                                 }
-                            }
-                            .labelsHidden()
-                            .frame(maxWidth: .infinity)
-                        }
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("Verify SSL")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                            Toggle("", isOn: $draft.verifySSL)
                                 .labelsHidden()
-                                .toggleStyle(.switch)
-                                .controlSize(.mini)
+                                .controlSize(.small)
+                                .frame(width: 80)
+                            }
+
+                            Divider().opacity(0.1)
+
+                            HStack {
+                                Text("Verify SSL")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Toggle("", isOn: $draft.verifySSL)
+                                    .labelsHidden()
+                                    .toggleStyle(.switch)
+                                    .controlSize(.mini)
+                            }
                         }
-                        .frame(width: 80)
+                        .frame(maxHeight: .infinity, alignment: .top)
                     }
+                    .frame(maxWidth: .infinity, minHeight: 140)
+
+                    // ── TLS / Certificate repair ───────────────────────────
+                    SettingsCard(title: "TLS / Certificate", icon: "cross.case") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("If sites fail with SSL errors, use this to refresh the MITM certificate.")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Spacer(minLength: 0)
+
+                            Button {
+                                Task {
+                                    isRepairingCert = true
+                                    certRepairStatus = ""
+                                    certRepairStatus = await app.repairCertificateNow()
+                                    isRepairingCert = false
+                                }
+                            } label: {
+                                Label("Repair Certificate", systemImage: "wrench.and.screwdriver")
+                                    .font(.system(size: 11, weight: .semibold))
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .disabled(isRepairingCert)
+
+                            if isRepairingCert {
+                                ProgressView().controlSize(.small)
+                            }
+
+                            if !certRepairStatus.isEmpty {
+                                Text(certRepairStatus)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                        .frame(maxHeight: .infinity, alignment: .top)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 140)
                 }
 
                 // ── Save / Revert ─────────────────────────────────────────

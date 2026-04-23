@@ -55,6 +55,16 @@ final class CoreManager {
             )
         }
 
+        let hostArch = currentMachineArch()
+        let coreArchs = binaryArchs(at: coreURL.path)
+        if !coreArchs.isEmpty && !coreArchs.contains(hostArch) {
+            let available = coreArchs.joined(separator: ",")
+            throw NSError(
+                domain: "Shade", code: 12,
+                userInfo: [NSLocalizedDescriptionKey: "shade-core is incompatible with this Mac architecture (host: \(hostArch), core: \(available)). Reinstall a universal build."]
+            )
+        }
+
         let configURL = try store.writeCoreConfig(settings)
 
         let p = Process()
@@ -140,5 +150,39 @@ final class CoreManager {
         pipe?.fileHandleForReading.readabilityHandler = nil
         process = nil
         pipe = nil
+    }
+
+    private func currentMachineArch() -> String {
+        let (status, out) = runTool("/usr/bin/uname", ["-m"])
+        if status == 0 {
+            let trimmed = out.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return "unknown"
+    }
+
+    private func binaryArchs(at path: String) -> [String] {
+        let (status, out) = runTool("/usr/bin/lipo", ["-archs", path])
+        if status != 0 { return [] }
+        return out
+            .split { $0 == " " || $0 == "\n" || $0 == "\t" }
+            .map(String.init)
+    }
+
+    private func runTool(_ executable: String, _ args: [String]) -> (Int32, String) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: executable)
+        p.arguments = args
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        do {
+            try p.run()
+            p.waitUntilExit()
+        } catch {
+            return (-1, "")
+        }
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return (p.terminationStatus, out)
     }
 }

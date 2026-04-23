@@ -11,7 +11,7 @@ import AppKit
 enum SudoPrivilege {
     static let sudoersPath = "/etc/sudoers.d/shade"
     static let tunHelperPath = "/usr/local/bin/shade-tun"
-    static let helperVersion = "1.0.4" // increment when changing the helper
+    static let helperVersion = "1.0.5" // increment when changing the helper
 
     enum SudoError: LocalizedError {
         case promptCancelled
@@ -93,8 +93,16 @@ enum SudoPrivilege {
             fi
             /sbin/ifconfig "$UTUN" down 2>/dev/null || true
             ;;
+          cert-install)
+            CERT="${2:-}"
+            CN="${3:-MasterHttpRelayVPN}"
+            if [ -n "$CERT" ] && [ -f "$CERT" ]; then
+              /usr/bin/security delete-certificate -c "$CN" /Library/Keychains/System.keychain >/dev/null 2>&1 || true
+              /usr/bin/security add-trusted-cert -d -r trustRoot -p basic -p ssl -k /Library/Keychains/System.keychain "$CERT"
+            fi
+            ;;
           *)
-            echo "usage: $0 up|down <protect_ip> <utun> <mtu>" >&2
+            echo "usage: $0 up|down|cert-install" >&2
             exit 1
             ;;
         esac

@@ -2,6 +2,12 @@ import SwiftUI
 import AppKit
 
 struct AboutView: View {
+    private var appVersionText: String {
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.2"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        return "Version \(short) • Build \(build)"
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -10,14 +16,14 @@ struct AboutView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Shade")
                             .font(.system(size: 28, weight: .bold, design: .rounded))
-                        Text("A native macOS client for MasterHttpRelayVPN. Ships the relay core and proxy in a single app so you don't need a separate SOCKS client.")
-                            .foregroundStyle(.secondary)
-                            .font(.system(size: 13))
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0")")
+                        Text(appVersionText)
                             .font(.system(size: 11, weight: .medium, design: .monospaced))
                             .foregroundStyle(.tertiary)
                             .padding(.top, 2)
+                        Text("MasterHttpRelayVPN client - by g3ntrix")
+                            .foregroundStyle(.secondary)
+                            .font(.system(size: 13))
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer()
                 }
