@@ -219,6 +219,17 @@ class ProxyServer:
     def _is_bypassed(self, host: str) -> bool:
         return self._host_matches_rules(host, self._bypass_hosts)
 
+    def _direct_temporarily_disabled(self, host: str) -> bool:
+        until = self._direct_fail_until.get(host)
+        if until and time.time() < until:
+            return True
+        if until:
+            self._direct_fail_until.pop(host, None)
+        return False
+
+    def _remember_direct_failure(self, host: str, ttl: int = 300) -> None:
+        self._direct_fail_until[host] = time.time() + ttl
+
     @staticmethod
     def _header_value(headers: dict | None, name: str) -> str:
         if not headers:
@@ -429,7 +440,7 @@ class ProxyServer:
 
         if self._is_bypassed(host):
             log.info("Bypass tunnel → %s:%d (matches bypass_hosts)", host, port)
-            await self._do_direct_tunnel(host, port, reader, writer)
+            await self._do_direct_tunnel(host, port, reader, writer, fragment=True)
             return
 
         # ── IP-literal destinations ───────────────────────────────
@@ -444,10 +455,10 @@ class ProxyServer:
         if _is_ip_literal(host):
             if not self._direct_temporarily_disabled(host):
                 log.info("Direct tunnel → %s:%d (IP literal)", host, port)
-                ok = await self._do_direct_tunnel(host, port, reader, writer)
+                ok = await self._do_direct_tunnel(host, port, reader, writer, fragment=True)
                 if ok:
                     return
-                self._remember_direct_failure(host, ttl=300)
+                self._remember_direct_failure(host, ttl=30)
                 if port not in (80, 443):
                     log.warning("Direct tunnel failed for %s:%d", host, port)
                     return
@@ -575,18 +586,23 @@ class ProxyServer:
     async def _do_socks5_tunnel(self, host: str, port: int, reader, writer):
         if self.mode == "apps_script":
             if self._is_ip_literal(host):
-                if port == 80:
-                    http_ok = await self._relay_http_stream(host, port, reader, writer, scheme="http")
-                    if http_ok:
+                if not self._direct_temporarily_disabled(host):
+                    log.info("SOCKS5 direct tunnel → %s:%d (IP literal)", host, port)
+                    ok = await self._do_plain_tcp_tunnel(host, port, reader, writer, fragment=True)
+                    if ok:
                         return
+                    self._remember_direct_failure(host, ttl=30)
+                    if port not in (80, 443):
+                        log.warning("SOCKS5 direct tunnel failed for %s:%d", host, port)
+                        return
+                    log.warning("SOCKS5 direct tunnel fallback → %s:%d (switching to relay)", host, port)
                 else:
-                    tls_ok = await self._do_mitm_connect(host, port, reader, writer)
-                    if tls_ok:
-                        return
-                    http_ok = await self._relay_http_stream(host, port, reader, writer, scheme="http")
-                    if http_ok:
-                        return
-                await self._do_plain_tcp_tunnel(host, port, reader, writer)
+                    log.info("SOCKS5 relay fallback → %s:%d (direct temporarily disabled)", host, port)
+                
+                if port == 443:
+                    await self._do_mitm_connect(host, port, reader, writer)
+                elif port == 80:
+                    await self._relay_http_stream(host, port, reader, writer, scheme="http")
                 return
 
             override_ip = self._sni_rewrite_ip(host)
@@ -595,9 +611,27 @@ class ProxyServer:
                 await self._do_sni_rewrite_tunnel(host, port, reader, writer, connect_ip=override_ip)
                 return
             if self._is_google_domain(host):
+                if self._direct_temporarily_disabled(host):
+                    log.info("SOCKS5 relay fallback → %s (direct tunnel temporarily disabled)", host)
+                    if port == 443:
+                        await self._do_mitm_connect(host, port, reader, writer)
+                    else:
+                        await self._relay_http_stream(host, port, reader, writer, scheme="http")
+                    return
+
                 log.info("SOCKS5 direct tunnel → %s (Google domain)", host)
-                await self._do_direct_tunnel(host, port, reader, writer)
+                ok = await self._do_direct_tunnel(host, port, reader, writer, fragment=True)
+                if ok:
+                    return
+
+                self._remember_direct_failure(host)
+                log.warning("SOCKS5 direct tunnel fallback → %s (switching to relay)", host)
+                if port == 443:
+                    await self._do_mitm_connect(host, port, reader, writer)
+                else:
+                    await self._relay_http_stream(host, port, reader, writer, scheme="http")
                 return
+
             tls_ok = await self._do_mitm_connect(host, port, reader, writer)
             if tls_ok:
                 return
@@ -617,10 +651,10 @@ class ProxyServer:
         except ValueError:
             return False
 
-    async def _do_plain_tcp_tunnel(self, host: str, port: int, reader, writer):
+    async def _do_plain_tcp_tunnel(self, host: str, port: int, reader, writer, fragment: bool = False) -> bool:
         try:
             r_remote, w_remote = await asyncio.wait_for(
-                asyncio.open_connection(host, port), timeout=10
+                asyncio.open_connection(host, port), timeout=20
             )
         except Exception as e:
             if isinstance(e, OSError) and getattr(e, "winerror", None) == 1231:
@@ -628,16 +662,26 @@ class ProxyServer:
             else:
                 msg = str(e) or repr(e)
                 log.error("SOCKS5 outbound connect failed (%s:%d): %s", host, port, msg)
-            return
+            return False
 
-        async def pipe(src, dst, label):
+        async def pipe(src, dst, label, should_fragment=False):
             try:
+                is_initial = True
                 while True:
                     data = await src.read(65536)
                     if not data:
                         break
-                    dst.write(data)
+                    
+                    if is_initial and should_fragment and len(data) > 3:
+                        # Split first packet to bypass simple DPI protocol detection
+                        dst.write(data[:3])
+                        await dst.drain()
+                        dst.write(data[3:])
+                    else:
+                        dst.write(data)
+                    
                     await dst.drain()
+                    is_initial = False
             except (ConnectionError, asyncio.CancelledError):
                 pass
             except Exception as exc:
@@ -645,13 +689,15 @@ class ProxyServer:
             finally:
                 try:
                     dst.close()
+                    await dst.wait_closed()
                 except Exception:
                     pass
 
         await asyncio.gather(
-            pipe(reader, w_remote, f"socks-client→{host}"),
+            pipe(reader, w_remote, f"socks-client→{host}", should_fragment=fragment),
             pipe(r_remote, writer, f"{host}→socks-client"),
         )
+        return True
 
     # ── Hosts override (fake DNS) ─────────────────────────────────
 
@@ -705,9 +751,9 @@ class ProxyServer:
     def _is_google_domain(self, host: str) -> bool:
         """Return True if host is a Google-owned domain."""
         h = host.lower().rstrip(".")
-        if h in self._GOOGLE_EXACT:
+        if h in self._GOOGLE_OWNED_EXACT:
             return True
-        for suffix in self._GOOGLE_SUFFIXES:
+        for suffix in self._GOOGLE_OWNED_SUFFIXES:
             if h.endswith(suffix):
                 return True
         return False
@@ -717,7 +763,8 @@ class ProxyServer:
     async def _do_direct_tunnel(self, host: str, port: int,
                                 reader: asyncio.StreamReader,
                                 writer: asyncio.StreamWriter,
-                                connect_ip: str | None = None):
+                                connect_ip: str | None = None,
+                                fragment: bool = False) -> bool:
         """Pipe raw TLS bytes directly to the target server.
 
         connect_ip overrides DNS: the TCP connection goes to that IP
@@ -727,21 +774,31 @@ class ProxyServer:
         target_ip = connect_ip or self.fronter.connect_host
         try:
             r_remote, w_remote = await asyncio.wait_for(
-                asyncio.open_connection(target_ip, port), timeout=10
+                asyncio.open_connection(target_ip, port), timeout=20
             )
         except Exception as e:
             log.error("Direct tunnel connect failed (%s via %s): %s",
                       host, target_ip, e)
-            return
+            return False
 
-        async def pipe(src, dst, label):
+        async def pipe(src, dst, label, should_fragment=False):
             try:
+                is_initial = True
                 while True:
                     data = await src.read(65536)
                     if not data:
                         break
-                    dst.write(data)
+                    
+                    if is_initial and should_fragment and len(data) > 3:
+                        # Split first packet to bypass simple DPI protocol detection
+                        dst.write(data[:3])
+                        await dst.drain()
+                        dst.write(data[3:])
+                    else:
+                        dst.write(data)
+                    
                     await dst.drain()
+                    is_initial = False
             except (ConnectionError, asyncio.CancelledError):
                 pass
             except Exception as e:
@@ -759,9 +816,10 @@ class ProxyServer:
                         pass
 
         await asyncio.gather(
-            pipe(reader, w_remote, f"client→{host}"),
+            pipe(reader, w_remote, f"client→{host}", should_fragment=fragment),
             pipe(r_remote, writer, f"{host}→client"),
         )
+        return True
 
     # ── SNI-rewrite tunnel ────────────────────────────────────────
 
@@ -802,7 +860,7 @@ class ProxyServer:
                     ssl=ssl_ctx_client,
                     server_hostname=sni_out,
                 ),
-                timeout=10,
+                timeout=20,
             )
         except Exception as e:
             log.error("SNI-rewrite outbound connect failed (%s via %s): %s",
@@ -876,14 +934,7 @@ class ProxyServer:
                 )
             else:
                 log.debug("TLS handshake failed for %s: %s", host, e)
-            # Close the client side so it fails fast and can retry, rather
-            # than hanging on a half-open connection.
-            try:
-                if not writer.is_closing():
-                    writer.close()
-            except Exception:
-                pass
-            return
+            return False
 
         # Update writer to use the new TLS transport
         writer._transport = new_transport
