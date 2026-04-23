@@ -947,9 +947,33 @@ class ProxyServer:
                         k, v = raw_line.decode(errors="replace").split(":", 1)
                         headers[k.strip()] = v.strip()
                         
-                # Shortening the length of X API URLs to prevent relay errors.
-                if host == "x.com" and  re.match(r"/i/api/graphql/[^/]+/[^?]+\?variables=", path):
-                    path = path.split("&")[0]
+                # X.com/Twitter GraphQL APIs pack massive JSONs into the GET query string.
+                # These routinely exceed Google Apps Script's 2KB URL limit and crash the relay.
+                # Since Twitter's backend is a standard GraphQL server, we can legally convert
+                # these large GET queries into POST requests with a JSON body, bypassing the
+                # URL size limit entirely without dropping any required parameters like `features`.
+                import urllib.parse
+                if method == "GET" and host in ("x.com", "api.x.com", "twitter.com", "api.twitter.com") and "/i/api/graphql" in path:
+                    try:
+                        p_parts = path.split("?", 1)
+                        if len(p_parts) == 2:
+                            qs_params = dict(urllib.parse.parse_qsl(p_parts[1]))
+                            if "variables" in qs_params:
+                                import json
+                                body_dict = {}
+                                for k, str_val in qs_params.items():
+                                    try:
+                                        body_dict[k] = json.loads(str_val)
+                                    except Exception:
+                                        body_dict[k] = str_val
+                                
+                                body = json.dumps(body_dict).encode("utf-8")
+                                method = "POST"
+                                path = p_parts[0]
+                                headers["content-type"] = "application/json"
+                                headers["content-length"] = str(len(body))
+                    except Exception as e:
+                        log.debug("Failed to convert X.com GET to POST: %s", e)
                 
                 # MITM traffic arrives as origin-form paths; SOCKS/plain HTTP can
                 # also send absolute-form requests. Normalize both to full URLs.

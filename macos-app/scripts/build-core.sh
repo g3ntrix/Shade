@@ -82,12 +82,13 @@ build_for_arch () {
     --workpath "$work/work" \
     --specpath "$work" \
     --paths "$REPO_ROOT" \
-    --hidden-import "mitm" \
-    --hidden-import "proxy_server" \
-    --hidden-import "domain_fronter" \
-    --hidden-import "h2_transport" \
-    --hidden-import "cert_installer" \
-    --hidden-import "ws" \
+    --paths "$REPO_ROOT/src" \
+    --hidden-import "src.mitm" \
+    --hidden-import "src.proxy_server" \
+    --hidden-import "src.domain_fronter" \
+    --hidden-import "src.h2_transport" \
+    --hidden-import "src.cert_installer" \
+    --hidden-import "src.lan_utils" \
     --collect-submodules "cryptography" \
     --collect-submodules "h2" \
     --target-arch "$arch" \
