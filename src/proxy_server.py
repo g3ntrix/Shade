@@ -153,6 +153,7 @@ class ProxyServer:
         self.socks_enabled = config.get("socks5_enabled", True)
         self.socks_host = config.get("socks5_host", self.host)
         self.socks_port = config.get("socks5_port", 1080)
+        self.mode = config.get("mode", "apps_script")
         self.fronter = DomainFronter(config)
         self.mitm = None
         self._cache = ResponseCache(max_mb=CACHE_MAX_MB)
@@ -317,7 +318,7 @@ class ProxyServer:
         if self.socks_enabled:
             try:
                 socks_srv = await asyncio.start_server(
-                    self._on_socks_client, self.socks_host, self.socks_port
+                    self._on_socks5_client, self.socks_host, self.socks_port
                 )
             except OSError as e:
                 log.error("SOCKS5 listener failed on %s:%d: %s",
@@ -331,7 +332,7 @@ class ProxyServer:
         )
         log.info(
             "Listening SOCKS5 on %s:%d — configure your SOCKS5 proxy to this address",
-            self.host, self.socks5_port,
+            self.host, self.socks_port,
         )
         async with http_srv, socks_srv:
             await asyncio.gather(http_srv.serve_forever(), socks_srv.serve_forever())

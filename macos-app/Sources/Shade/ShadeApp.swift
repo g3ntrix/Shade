@@ -17,6 +17,9 @@ struct ShadeApp: App {
                 .onAppear {
                     delegate.appState = appState
                 }
+                .onChange(of: appState.status) { _ in
+                    delegate.updateIcon()
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.automatic)
@@ -40,8 +43,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
+        updateIcon()
+        
         if let button = statusItem?.button {
-            button.image = NSImage(systemSymbolName: "bolt.shield", accessibilityDescription: "Shade")
             button.action = #selector(togglePopover)
             button.target = self
         }
@@ -49,12 +53,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Setup Popover
         popover.contentSize = NSSize(width: 280, height: 320)
         popover.behavior = .transient
-        // We will host our SwiftUI MenuBarView inside the popover
         if let appState = appState {
             popover.contentViewController = NSHostingController(rootView: MenuBarView(onClose: { [weak self] in
                 self?.popover.performClose(nil)
             }).environmentObject(appState))
         }
+    }
+
+    func updateIcon() {
+        guard let button = statusItem?.button else { return }
+        let isRunning = appState?.status.isRunning ?? false
+        button.image = NSImage(systemSymbolName: isRunning ? "bolt.shield.fill" : "bolt.shield", accessibilityDescription: "Shade")
     }
 
     @objc func togglePopover() {
@@ -63,20 +72,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            // Update appState in case it wasn't ready during setup
+            // Ensure appState is connected to the view
             if let appState = appState, popover.contentViewController == nil {
                 popover.contentViewController = NSHostingController(rootView: MenuBarView(onClose: { [weak self] in
                     self?.popover.performClose(nil)
                 }).environmentObject(appState))
             }
             
-            // Refresh icon state
-            if let appState = appState {
-                button.image = NSImage(systemSymbolName: appState.status.isRunning ? "bolt.shield.fill" : "bolt.shield", accessibilityDescription: "Shade")
-            }
-            
+            updateIcon()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            // Fix: ensure the popover window becomes key so buttons work
             popover.contentViewController?.view.window?.makeKey()
         }
     }

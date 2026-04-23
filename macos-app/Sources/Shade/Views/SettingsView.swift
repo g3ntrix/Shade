@@ -10,175 +10,239 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Settings")
-                        .font(.system(size: 22, weight: .bold, design: .rounded))
-                    Text("Everything here has sensible defaults. Only touch it if you know why.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-
-                // ── Network ───────────────────────────────────────────────
-                SettingsCard(title: "Network", icon: "network") {
-                    SField(label: "Listen Host", hint: "Bind address for HTTP + SOCKS5") {
-                        TextField("127.0.0.1", text: $draft.listenHost)
-                            .monoField()
-                    }
-                    HStack(spacing: 12) {
-                        SField(label: "HTTP Port") {
-                            TextField("1080", text: Binding(
-                                get: { String(draft.listenPort) },
-                                set: { draft.listenPort = Int($0.filter(\.isNumber)) ?? draft.listenPort }
-                            ))
-                            .monoField()
-                        }
-                        SField(label: "SOCKS5 Port") {
-                            TextField("8080", text: Binding(
-                                get: { String(draft.socksPort) },
-                                set: { draft.socksPort = Int($0.filter(\.isNumber)) ?? draft.socksPort }
-                            ))
-                            .monoField()
-                        }
-                    }
-                }
-
-                // ── Fronting ──────────────────────────────────────────────
-                SettingsCard(title: "Fronting", icon: "arrow.triangle.branch") {
-                    HStack(spacing: 12) {
-                        SField(label: "Front Domain", hint: "SNI shown to network") {
-                            TextField("www.google.com", text: $draft.frontDomain)
-                                .monoField()
-                        }
-                        SField(label: "Google IP", hint: "Edge IP for relay") {
-                            TextField("216.239.38.120", text: $draft.googleIP)
-                                .monoField()
-                        }
-                    }
-                }
+                header
+                
+                networkSection
+                
+                frontingSection
 
                 HStack(alignment: .top, spacing: 20) {
-                    // ── Advanced ──────────────────────────────────────────────
-                    SettingsCard(title: "Advanced", icon: "slider.horizontal.3") {
-                        VStack(spacing: 12) {
-                            HStack {
-                                Text("Log Level")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                Picker("", selection: $draft.logLevel) {
-                                    ForEach(AppSettings.LogLevel.allCases) { l in
-                                        Text(l.rawValue).tag(l)
-                                    }
-                                }
-                                .labelsHidden()
-                                .controlSize(.small)
-                                .frame(width: 80)
-                            }
-
-                            Divider().opacity(0.1)
-
-                            HStack {
-                                Text("Verify SSL")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                Toggle("", isOn: $draft.verifySSL)
-                                    .labelsHidden()
-                                    .toggleStyle(.switch)
-                                    .controlSize(.mini)
-                            }
-                        }
-                        .frame(maxHeight: .infinity, alignment: .top)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 140)
-
-                    // ── TLS / Certificate repair ───────────────────────────
-                    SettingsCard(title: "TLS / Certificate", icon: "cross.case") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("If sites fail with SSL errors, use this to refresh the MITM certificate.")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-
-                            Spacer(minLength: 0)
-
-                            Button {
-                                Task {
-                                    isRepairingCert = true
-                                    certRepairStatus = ""
-                                    certRepairStatus = await app.repairCertificateNow()
-                                    isRepairingCert = false
-                                }
-                            } label: {
-                                Label("Repair Certificate", systemImage: "wrench.and.screwdriver")
-                                    .font(.system(size: 11, weight: .semibold))
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                            .disabled(isRepairingCert)
-
-                            if isRepairingCert {
-                                ProgressView().controlSize(.small)
-                            }
-
-                            if !certRepairStatus.isEmpty {
-                                Text(certRepairStatus)
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                            }
-                        }
-                        .frame(maxHeight: .infinity, alignment: .top)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 140)
+                    advancedSection
+                    // Load balancing moved to Dashboard
                 }
 
-                // ── Save / Revert ─────────────────────────────────────────
-                HStack {
-                    if saved {
-                        Label("Saved", systemImage: "checkmark.circle.fill")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.green)
-                            .transition(.opacity)
-                    }
-                    Spacer()
-                    Button("Revert") { draft = app.settings }
-                        .buttonStyle(.bordered)
-                    Button("Save") { doSave() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(settingsDraft == app.settings)
-                }
+                certificateSection
 
-                if app.status.isRunning {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                        Text("Changes take effect after Stop → Start.")
-                    }
-                    .font(.system(size: 12))
-                    .foregroundStyle(.yellow)
-                }
+                footer
             }
         }
         .onAppear { draft = app.settings }
-        // Keep draft credentials in sync if user edits them via picker
         .onChange(of: app.settings.credentials) { _ in syncCredentials() }
         .onChange(of: app.settings.activeCredentialID) { _ in syncCredentials() }
+    }
+
+    // MARK: - Sub-views
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Settings")
+                .font(.system(size: 22, weight: .bold, design: .rounded))
+            Text("Everything here has sensible defaults. Only touch it if you know why.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var networkSection: some View {
+        SettingsCard(title: "Network", icon: "network") {
+            SField(label: "Listen Host", hint: "Bind address for HTTP + SOCKS5") {
+                TextField("127.0.0.1", text: $draft.listenHost)
+                    .monoField()
+            }
+            HStack(spacing: 12) {
+                SField(label: "HTTP Port") {
+                    TextField("1080", text: Binding(
+                        get: { String(draft.listenPort) },
+                        set: { draft.listenPort = Int($0.filter(\.isNumber)) ?? draft.listenPort }
+                    ))
+                    .monoField()
+                }
+                SField(label: "SOCKS5 Port") {
+                    TextField("8080", text: Binding(
+                        get: { String(draft.socksPort) },
+                        set: { draft.socksPort = Int($0.filter(\.isNumber)) ?? draft.socksPort }
+                    ))
+                    .monoField()
+                }
+            }
+        }
+    }
+
+    private var frontingSection: some View {
+        SettingsCard(title: "Fronting", icon: "arrow.triangle.branch") {
+            HStack(spacing: 12) {
+                SField(label: "Front Domain", hint: "SNI shown to network") {
+                    TextField("www.google.com", text: $draft.frontDomain)
+                        .monoField()
+                }
+                SField(label: "Google IP", hint: "Edge IP for relay") {
+                    TextField("216.239.38.120", text: $draft.googleIP)
+                        .monoField()
+                }
+            }
+        }
+    }
+
+    private var advancedSection: some View {
+        SettingsCard(title: "Advanced", icon: "slider.horizontal.3") {
+            VStack(spacing: 12) {
+                HStack {
+                    Text("Log Level")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Picker("", selection: $draft.logLevel) {
+                        ForEach(AppSettings.LogLevel.allCases) { l in
+                            Text(l.rawValue).tag(l)
+                        }
+                    }
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(width: 80)
+                }
+
+                Divider().opacity(0.1)
+
+                HStack {
+                    Text("Verify SSL")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Toggle("", isOn: $draft.verifySSL)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                }
+            }
+            .frame(maxHeight: .infinity, alignment: .top)
+        }
+        .frame(maxWidth: .infinity, minHeight: 140)
+    }
+
+    private var loadBalancingSection: some View {
+        SettingsCard(title: "Load Balancing", icon: "square.grid.3x1.below.line.grid.1x2") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Enable LB Mode")
+                        .font(.system(size: 10, weight: .semibold))
+                    Spacer()
+                    Toggle("", isOn: $draft.enableLoadBalancing)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                }
+                
+                Text("Distribute traffic across all selected profiles.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                
+                if draft.enableLoadBalancing {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach($draft.credentials) { $cred in
+                                HStack {
+                                    Image(systemName: cred.isEnabledForLB ? "checkmark.square.fill" : "square")
+                                        .foregroundStyle(cred.isEnabledForLB ? Color.accentColor : .secondary)
+                                    Text(cred.name)
+                                        .font(.system(size: 10))
+                                    Spacer()
+                                }
+                                .padding(4)
+                                .background(.white.opacity(0.03))
+                                .cornerRadius(4)
+                                .onTapGesture {
+                                    cred.isEnabledForLB.toggle()
+                                }
+                            }
+                        }
+                    }
+                    .frame(height: 60)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 140)
+    }
+
+    private var certificateSection: some View {
+        SettingsCard(title: "TLS / Certificate", icon: "cross.case") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("If sites fail with SSL errors, use this to refresh the MITM certificate.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 12) {
+                    Button {
+                        Task {
+                            isRepairingCert = true
+                            certRepairStatus = ""
+                            certRepairStatus = await app.repairCertificateNow()
+                            isRepairingCert = false
+                        }
+                    } label: {
+                        Label("Repair Certificate", systemImage: "wrench.and.screwdriver")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(isRepairingCert)
+
+                    if isRepairingCert {
+                        ProgressView().controlSize(.small)
+                    }
+
+                    if !certRepairStatus.isEmpty {
+                        Text(certRepairStatus)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+            }
+        }
+    }
+
+    private var footer: some View {
+        VStack(spacing: 12) {
+            HStack {
+                if saved {
+                    Label("Saved", systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.green)
+                        .transition(.opacity)
+                }
+                Spacer()
+                Button("Revert") { draft = app.settings }
+                    .buttonStyle(.bordered)
+                Button("Save") { doSave() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(settingsDraft == app.settings)
+            }
+
+            if app.status.isRunning {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text("Changes take effect after Stop → Start.")
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(.yellow)
+            }
+        }
     }
 
     /// A copy of draft with credentials/TUN overwritten — used only for equality check.
     private var settingsDraft: AppSettings {
         var s = draft
-        s.credentials        = app.settings.credentials
+        // activeCredentialID is managed by the picker on Dashboard/DashboardView
         s.activeCredentialID = app.settings.activeCredentialID
         return s
     }
 
     private func doSave() {
         var merged = draft
-        // Preserve fields managed elsewhere
-        merged.credentials        = app.settings.credentials
+        // Preserve activeCredentialID which is managed elsewhere
         merged.activeCredentialID = app.settings.activeCredentialID
+        
         app.settings = merged
         app.saveSettings()
         withAnimation { saved = true }
@@ -188,8 +252,11 @@ struct SettingsView: View {
     }
 
     private func syncCredentials() {
+        // Keep the master list of credentials in sync, but preserve the draft's toggle state 
+        // if we are currently editing it? Actually, usually simple sync is best.
         draft.credentials        = app.settings.credentials
         draft.activeCredentialID = app.settings.activeCredentialID
+        draft.enableLoadBalancing = app.settings.enableLoadBalancing
     }
 }
 

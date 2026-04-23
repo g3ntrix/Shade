@@ -36,6 +36,10 @@ final class AppState: ObservableObject {
     @Published var logs: [LogLine] = []
     @Published var startedAt: Date?
 
+    /// Real-time tracking of which scripts are processing requests.
+    @Published var activeSIDs: Set<String> = []
+    private var lastHitAt: [String: Date] = [:]
+
     /// Ports actually in use (may differ from settings if auto-adjusted).
     @Published var activeHTTPPort:  Int = 0
     @Published var activeSOCKSPort: Int = 0
@@ -68,10 +72,60 @@ final class AppState: ObservableObject {
         self.settings = ConfigStore().loadSettings() ?? .default
 
         core.onLog = { [weak self] line in
-            Task { @MainActor in self?.append(line) }
+            Task { @MainActor in 
+                self?.append(line)
+                self?.trackHits(in: line.text)
+            }
         }
         core.onStatus = { [weak self] new in
             Task { @MainActor in self?.status = new }
+        }
+        
+        // Decay timer to turn off "glowing" dots after inactivity
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.decayHits() }
+        }
+    }
+
+    private func trackHits(in text: String) {
+        // Clean text of ANSI escape sequences (like \u{1b}[32m)
+        let cleanText = text.replacingOccurrences(of: "\\e\\[[0-9;]*[mK]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\u{1b}\\[[0-9;]*[mK]", with: "", options: .regularExpression)
+
+        // Look for our machine-readable marker: [HIT] SID
+        if let range = cleanText.range(of: "[HIT] ") {
+            let hitSid = String(cleanText[range.upperBound...].prefix(while: { !$0.isWhitespace && $0 != "]" }))
+            if !hitSid.isEmpty {
+                for cred in settings.credentials {
+                    if cred.scriptID.hasSuffix(hitSid) || hitSid.hasSuffix(cred.scriptID) {
+                        activeSIDs.insert(cred.scriptID)
+                        lastHitAt[cred.scriptID] = Date()
+                    }
+                }
+            }
+        }
+        
+        // Backward compatibility for Batch relay logs
+        if let range = cleanText.range(of: "to script ") {
+            let logSid = String(cleanText[range.upperBound...].prefix(while: { !$0.isWhitespace && $0 != "." && $0 != "," }))
+            if !logSid.isEmpty {
+                for cred in settings.credentials {
+                    if cred.scriptID.hasSuffix(logSid) || logSid.hasSuffix(cred.scriptID) {
+                        activeSIDs.insert(cred.scriptID)
+                        lastHitAt[cred.scriptID] = Date()
+                    }
+                }
+            }
+        }
+    }
+
+    private func decayHits() {
+        let now = Date()
+        for (sid, date) in lastHitAt {
+            if now.timeIntervalSince(date) > 2.0 {
+                activeSIDs.remove(sid)
+                lastHitAt.removeValue(forKey: sid)
+            }
         }
     }
 

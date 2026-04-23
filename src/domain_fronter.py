@@ -1149,6 +1149,7 @@ class DomainFronter:
     async def _relay_single_h2(self, payload: dict) -> bytes:
         """Execute a relay through HTTP/2 multiplexing."""
         sid = self._script_id_for_key(self._host_key(payload.get("u")))
+        log.info("[HIT] %s", sid)
         return await self._relay_single_h2_with_sid(payload, sid)
 
     async def _relay_single_h2_with_sid(self, payload: dict, sid: str) -> bytes:

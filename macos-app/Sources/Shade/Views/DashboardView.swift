@@ -21,6 +21,11 @@ struct DashboardView: View {
                                     .font(.system(size: 11))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
+                                
+                                if app.settings.enableLoadBalancing && app.status.isRunning {
+                                    ClusterPulse()
+                                        .padding(.top, 4)
+                                }
                             }
                             Spacer()
                             PowerButton(isRunning: app.status.isRunning,
@@ -132,7 +137,26 @@ private struct CredentialsCard: View {
                     Label("Profile", systemImage: "key.fill")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.purple)
+                    
                     Spacer()
+                    
+                    // New LB Toggle directly on Dashboard
+                    HStack(spacing: 6) {
+                        Text("Load Balance")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Toggle("", isOn: Binding(
+                            get: { app.settings.enableLoadBalancing },
+                            set: { app.settings.enableLoadBalancing = $0; app.saveSettings() }
+                        ))
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .labelsHidden()
+                    }
+                    .background(Capsule().fill(.white.opacity(0.05)))
+                    .disabled(app.status.isRunning || app.status.isTransitioning)
+                    .opacity(app.status.isRunning || app.status.isTransitioning ? 0.6 : 1.0)
+                    
                     Button {
                         editTarget = nil
                         showEdit   = true
@@ -201,6 +225,8 @@ private struct CredentialsCard: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    .disabled(app.status.isRunning || app.status.isTransitioning)
+                    .opacity(app.status.isRunning || app.status.isTransitioning ? 0.7 : 1.0)
 
                     if active != nil {
                         HStack {
@@ -260,11 +286,22 @@ struct CredentialPickerSheet: View {
                     ForEach(app.settings.credentials) { cred in
                         CredentialRow(
                             credential: cred,
-                            isActive: cred.id == app.settings.activeCredential?.id,
+                            isActive: app.settings.enableLoadBalancing 
+                                ? cred.isEnabledForLB 
+                                : cred.id == app.settings.activeCredential?.id,
+                            isLB: app.settings.enableLoadBalancing,
                             onSelect: {
-                                app.settings.activeCredentialID = cred.id
+                                if app.settings.enableLoadBalancing {
+                                    // Toggle for LB
+                                    if let idx = app.settings.credentials.firstIndex(where: { $0.id == cred.id }) {
+                                        app.settings.credentials[idx].isEnabledForLB.toggle()
+                                    }
+                                } else {
+                                    // Normal single selection
+                                    app.settings.activeCredentialID = cred.id
+                                }
                                 app.saveSettings()
-                                dismiss()
+                                if !app.settings.enableLoadBalancing { dismiss() }
                             },
                             onEdit: {
                                 editTarget = cred
@@ -310,6 +347,7 @@ struct CredentialPickerSheet: View {
 private struct CredentialRow: View {
     let credential: Credential
     let isActive:   Bool
+    var isLB:       Bool = false
     let onSelect:   () -> Void
     let onEdit:     () -> Void
     let onDelete:   () -> Void
@@ -318,7 +356,9 @@ private struct CredentialRow: View {
         HStack(spacing: 10) {
             Button(action: onSelect) {
                 HStack(spacing: 10) {
-                    Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
+                    Image(systemName: isLB 
+                          ? (isActive ? "checkmark.square.fill" : "square")
+                          : (isActive ? "checkmark.circle.fill" : "circle"))
                         .foregroundStyle(isActive ? .purple : .secondary)
                         .font(.system(size: 17))
                     VStack(alignment: .leading, spacing: 2) {
@@ -681,6 +721,67 @@ private struct EditField<Content: View>: View {
             }
             content()
         }
+    }
+}
+
+// MARK: - Cluster visualize
+struct ClusterPulse: View {
+    @EnvironmentObject var app: AppState
+    
+    // We only show dots for scripts that are ENABLED for LB
+    private var enabledScripts: [Credential] {
+        app.settings.credentials.filter { $0.isEnabledForLB }
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(enabledScripts) { cred in
+                PulseDot(sid: cred.scriptID, 
+                         isActive: app.activeSIDs.contains(cred.scriptID))
+            }
+            if enabledScripts.isEmpty {
+                Text("Select profiles to balance")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+struct PulseDot: View {
+    let sid: String
+    let isActive: Bool
+    
+    @State private var breathing = false
+
+    var body: some View {
+        ZStack {
+            // Stronger Glow for hits
+            if isActive {
+                Circle()
+                    .fill(Color.purple)
+                    .frame(width: 16, height: 16)
+                    .blur(radius: 6)
+                    .transition(.opacity.combined(with: .scale))
+            }
+            
+            // Core
+            Circle()
+                .fill(isActive ? Color.purple : Color.white.opacity(0.15))
+                .frame(width: 8, height: 8)
+                .overlay(
+                    Circle()
+                        .stroke(isActive ? Color.white.opacity(0.5) : Color.clear, lineWidth: 1)
+                )
+                .scaleEffect(isActive ? 1.3 : 1.0)
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isActive)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                breathing = true
+            }
+        }
+        .help("Script \(sid.prefix(8))...")
     }
 }
 

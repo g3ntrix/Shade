@@ -7,13 +7,15 @@ struct Credential: Codable, Equatable, Identifiable {
     var name: String
     var scriptID: String
     var authKey: String
+    var isEnabledForLB: Bool = true
 
     init(id: UUID = UUID(), name: String = "Default",
-         scriptID: String = "", authKey: String = "") {
+         scriptID: String = "", authKey: String = "", isEnabledForLB: Bool = true) {
         self.id = id
         self.name = name
         self.scriptID = scriptID
         self.authKey = authKey
+        self.isEnabledForLB = isEnabledForLB
     }
 }
 
@@ -24,6 +26,7 @@ struct AppSettings: Codable, Equatable {
     // ── Credentials ───────────────────────────────────────────────────────
     var credentials: [Credential] = []
     var activeCredentialID: UUID? = nil
+    var enableLoadBalancing: Bool = false
 
     // ── Listener ──────────────────────────────────────────────────────────
     var listenHost: String = "127.0.0.1"
@@ -65,7 +68,7 @@ struct AppSettings: Codable, Equatable {
     // MARK: - Codable (custom for legacy migration)
 
     enum CodingKeys: String, CodingKey {
-        case credentials, activeCredentialID
+        case credentials, activeCredentialID, enableLoadBalancing
         case listenHost, listenPort, socksPort
         case frontDomain, googleIP, verifySSL, logLevel
         case useSystemProxy
@@ -98,7 +101,8 @@ struct AppSettings: Codable, Equatable {
         googleIP        = (try? c.decode(String.self,   forKey: .googleIP))        ?? "216.239.38.120"
         verifySSL       = (try? c.decode(Bool.self,      forKey: .verifySSL))       ?? true
         logLevel        = (try? c.decode(LogLevel.self,  forKey: .logLevel))        ?? .info
-        useSystemProxy  = (try? c.decode(Bool.self,      forKey: .useSystemProxy))  ?? false
+        useSystemProxy     = (try? c.decode(Bool.self,      forKey: .useSystemProxy))  ?? false
+        enableLoadBalancing = (try? c.decode(Bool.self,      forKey: .enableLoadBalancing)) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -113,6 +117,7 @@ struct AppSettings: Codable, Equatable {
         try c.encode(verifySSL,          forKey: .verifySSL)
         try c.encode(logLevel,           forKey: .logLevel)
         try c.encode(useSystemProxy,     forKey: .useSystemProxy)
+        try c.encode(enableLoadBalancing, forKey: .enableLoadBalancing)
     }
 
     // MARK: - Core config
@@ -120,9 +125,16 @@ struct AppSettings: Codable, Equatable {
     func makeCoreConfig() -> [String: Any] {
         let cred = activeCredential
         
-        // Prepare list of all credentials for load balancing
-        let scriptConfigs = credentials.map { cred in
-            ["id": cred.scriptID, "key": cred.authKey]
+        // Determine which scripts to pass to the core
+        let scriptsToUse: [Credential]
+        if enableLoadBalancing {
+            scriptsToUse = credentials.filter { $0.isEnabledForLB }
+        } else {
+            scriptsToUse = cred != nil ? [cred!] : []
+        }
+
+        let scriptConfigs = scriptsToUse.map { c in
+            ["id": c.scriptID, "key": c.authKey]
         }.filter { !($0["id"]?.isEmpty ?? true) }
 
         var dict: [String: Any] = [
@@ -132,6 +144,7 @@ struct AppSettings: Codable, Equatable {
             "script_id":      cred?.scriptID ?? "",
             "auth_key":       cred?.authKey  ?? "",
             "script_configs": scriptConfigs,
+            "parallel_relay": enableLoadBalancing ? 2 : 1,
             "listen_host":    listenHost,
             "listen_port":    listenPort,
             "socks5_host":    listenHost,
