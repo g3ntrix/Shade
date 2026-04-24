@@ -58,15 +58,27 @@ def _patch_ca_paths() -> None:
 
 
 def main() -> None:
-    # Run with the writable dir as CWD so any other relative file lookups
-    # (e.g. logs) land somewhere sane instead of the read-only .app bundle.
-    os.chdir(_writable_app_dir())
-    _patch_ca_paths()
+    # Print immediately to indicate the binary has started.
+    # We use flush=True to ensure it bypasses any buffering.
+    print("[bootstrap] shade-core starting...", flush=True)
 
-    # Late import: after patching mitm, `main.py` will pull in the patched
-    # constants via `from mitm import CA_CERT_FILE`.
-    from main import main as run
-    run()
+    try:
+        app_dir = _writable_app_dir()
+        os.chdir(app_dir)
+        print(f"[bootstrap] CWD set to: {app_dir}", flush=True)
+
+        _patch_ca_paths()
+
+        # Late import: after patching mitm, `main.py` will pull in the patched
+        # constants via `from mitm import CA_CERT_FILE`.
+        print("[bootstrap] loading main module", flush=True)
+        from main import main as run
+        run()
+    except Exception as e:
+        print(f"[bootstrap] critical crash: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == "__main__":

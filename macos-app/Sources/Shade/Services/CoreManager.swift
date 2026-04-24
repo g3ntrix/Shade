@@ -83,7 +83,7 @@ final class CoreManager {
 
         let p = Process()
         p.executableURL = coreURL
-        p.arguments = ["-c", configURL.path]
+        p.arguments = ["-c", configURL.path, "--no-cert-check"]
         // Isolate env so Python doesn't inherit a broken user PYTHONPATH etc.
         p.environment = [
             "HOME": NSHomeDirectory(),
@@ -135,27 +135,27 @@ final class CoreManager {
 
         out.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let chunk = handle.availableData
-            if chunk.isEmpty {
-                handle.readabilityHandler = nil
-                return
-            }
+            if chunk.isEmpty { return }
             let text = String(data: chunk, encoding: .utf8) ?? ""
             self?.onLog?(LogLine(timestamp: Date(), stream: .stdout, text: text))
         }
 
-        try p.run()
+        do {
+            try p.run()
+        } catch {
+            self.onLog?(LogLine(timestamp: Date(), stream: .system, text: "[CoreManager] p.run() failed: \(error.localizedDescription)\n"))
+            throw error
+        }
+        
         process = p
         pipe = out
 
         let probeHost = settings.listenHost == "0.0.0.0" ? "127.0.0.1" : settings.listenHost
         let ready = await waitForListener(host: settings.listenHost, port: settings.socksPort)
+        
         if !ready {
-            // Core is still alive but the SOCKS listener never came up.
-            // Check if it already exited (which would have set status to .error)
-            if process == nil {
-                // terminationHandler already handled status and logs.
-                return
-            }
+            self.onLog?(LogLine(timestamp: Date(), stream: .system, text: "[CoreManager] waitForListener timed out.\n"))
+            if process == nil { return }
 
             // Include the probe target so the user can cross-check against
             // core's own "Listening SOCKS5 on …" log line. If the ports
@@ -168,6 +168,7 @@ final class CoreManager {
                     "Core started but SOCKS5 listener on \(probeHost):\(settings.socksPort) didn't come up in time. Check Logs — another process may be holding that port."]
             )
         }
+        self.onLog?(LogLine(timestamp: Date(), stream: .system, text: "[CoreManager] Listener ready.\n"))
         onStatus?(.running)
     }
 

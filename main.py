@@ -165,6 +165,14 @@ def main():
         print("Deploy the Apps Script from Code.gs and paste the Deployment ID.")
         sys.exit(1)
 
+    # ── Ensure CA file exists ─────────────────────────────────────────────
+    # MITMCertManager generates ca/ca.crt + ca/ca.key on first instantiation.
+    # We do this before checking for --install-cert so that it can actually
+    # generate a missing file.
+    if not os.path.exists(CA_CERT_FILE):
+        from mitm import MITMCertManager
+        MITMCertManager()
+
     # ── Certificate installation ──────────────────────────────────────────
     if args.install_cert:
         setup_logging("INFO")
@@ -189,11 +197,6 @@ def main():
     else:
         log.info("Script ID         : %s", script_ids)
 
-    # Ensure CA file exists before checking / installing it.
-    # MITMCertManager generates ca/ca.crt on first instantiation.
-    if not os.path.exists(CA_CERT_FILE):
-        from mitm import MITMCertManager
-        MITMCertManager()  # side-effect: creates ca/ca.crt + ca/ca.key
 
     # Auto-install MITM CA if not already trusted
     if not args.no_cert_check:
@@ -224,11 +227,28 @@ def main():
     log.info("HTTP proxy address : %s:%d", listen_host, listen_port)
     log.info("SOCKS5 proxy addr  : %s:%d", listen_host, socks5_port)
 
-    # Log LAN access addresses if sharing is enabled
+    # Log LAN access addresses if sharing is enabled.
+    #
+    # Runs in a daemon thread because the socket fallback path
+    # (used when `netifaces` isn't bundled — which is the case for the
+    # frozen macOS core) calls `socket.getaddrinfo(gethostname(), …)`,
+    # and on some Macs that blocks indefinitely on mDNS. Blocking here
+    # prevents `asyncio.run(_run(...))` from ever starting the listener,
+    # which from the UI looks like "core spawned but SOCKS5 never came
+    # up" → the app reverts to Ready. The thread is daemonised so it
+    # can't keep the process alive on shutdown.
     if lan_sharing:
-        socks_port = config.get("socks5_port", 1080) if config.get("socks5_enabled", True) else None
-        log_lan_access(config.get("listen_port", 8080), socks_port)
+        import threading
+        _socks_port_for_log = (
+            config.get("socks5_port", 1080) if config.get("socks5_enabled", True) else None
+        )
+        threading.Thread(
+            target=log_lan_access,
+            args=(config.get("listen_port", 8080), _socks_port_for_log),
+            daemon=True,
+        ).start()
 
+    log.info("Starting event loop")
     try:
         asyncio.run(_run(config))
     except KeyboardInterrupt:
