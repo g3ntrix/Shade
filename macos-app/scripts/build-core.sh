@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
 # Freezes the upstream Python listener (main.py + mitm.py + friends) plus the
-# macos-app bootstrap into a single self-contained binary via PyInstaller.
+# macos-app bootstrap into self-contained binaries via PyInstaller.
 #
-# Produces: macos-app/bundle/shade-core   (universal arm64 + x86_64 via lipo)
+# Produces:
+#   macos-app/bundle/shade-core-arm64    (Apple Silicon)
+#   macos-app/bundle/shade-core-x86_64   (Intel)
+#
+# IMPORTANT: We intentionally do NOT `lipo -create` these two binaries.
+# PyInstaller's `--onefile` mode appends a CArchive payload after the
+# Mach-O sections; lipo-ing two onefile executables produces a binary
+# that looks universal to `file`, but the bootloader in whichever slice
+# runs will extract the WRONG payload (causing errors like "Python
+# shared library ... mach-o file, but is an incompatible architecture").
+# Shipping both binaries separately and letting the Swift launcher pick
+# the right one at runtime is the reliable pattern.
 #
 # Requirements:
 #   - python3 (>= 3.10) on PATH for the host arch.
@@ -14,10 +25,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$ROOT/.." && pwd)"
 BUILD_DIR="$ROOT/.core-build"
 BUNDLE_DIR="$ROOT/bundle"
-OUT="$BUNDLE_DIR/shade-core"
+OUT_ARM64="$BUNDLE_DIR/shade-core-arm64"
+OUT_X86_64="$BUNDLE_DIR/shade-core-x86_64"
 REQUIRE_UNIVERSAL="${REQUIRE_UNIVERSAL:-0}"
 
 mkdir -p "$BUNDLE_DIR"
+# Clear any stale outputs (including pre-lipo legacy "shade-core").
+rm -f "$OUT_ARM64" "$OUT_X86_64" "$BUNDLE_DIR/shade-core"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
@@ -95,11 +109,43 @@ build_for_arch () {
   run_for_arch "$arch" "$py" -m venv "$work/venv"
   local vpy="$work/venv/bin/python"
 
-  echo "→ [$arch] installing deps"
-  run_for_arch "$arch" "$vpy" -m pip install --quiet --upgrade pip wheel
-  # Upstream runtime deps + PyInstaller.
-  run_for_arch "$arch" "$vpy" -m pip install --quiet \
-    "cryptography>=41" "h2>=4.1" "pyinstaller>=6.0"
+  # ── Install deps ──────────────────────────────────────────────────────────
+  # Offline-first strategy:
+  #   1. Try installing from the local vendor cache (--no-index).
+  #   2. If that fails (missing wheel for this Python/arch), fall back to
+  #      PyPI and PIP-DOWNLOAD into vendor/ so the NEXT build can run
+  #      offline.
+  # Result: first build online populates the cache; every subsequent
+  # build — online or not — reuses it without touching PyPI.
+  local vendor_dir="$ROOT/vendor"
+  mkdir -p "$vendor_dir"
+
+  install_deps () {
+    local pkgs=("$@")
+    # Try offline first. Pip exits non-zero if any wheel is missing.
+    if run_for_arch "$arch" "$vpy" -m pip install --quiet \
+         --no-index --find-links="$vendor_dir" \
+         "${pkgs[@]}" 2>/dev/null; then
+      echo "  [offline] installed ${pkgs[*]} from $vendor_dir"
+      return 0
+    fi
+    echo "  [online]  vendor cache miss — fetching ${pkgs[*]} from PyPI"
+    run_for_arch "$arch" "$vpy" -m pip install --quiet "${pkgs[@]}"
+    # Populate vendor/ with the exact wheels pip just resolved (binary
+    # only — source distributions don't help the offline path). Failures
+    # here are non-fatal: the install already succeeded.
+    run_for_arch "$arch" "$vpy" -m pip download --quiet \
+      --dest "$vendor_dir" --only-binary=:all: \
+      "${pkgs[@]}" 2>/dev/null || true
+  }
+
+  echo "→ [$arch] installing pip & wheel"
+  # Fresh venv: pip picks latest from the resolver; no --upgrade needed
+  # (and --upgrade isn't accepted by `pip download` cleanly).
+  install_deps pip wheel
+
+  echo "→ [$arch] installing core deps + PyInstaller"
+  install_deps "cryptography>=41" "h2>=4.1" "pyinstaller>=6.0"
 
   echo "→ [$arch] running PyInstaller"
   # --onefile for a single binary. --collect-all cryptography pulls in the
@@ -114,12 +160,15 @@ build_for_arch () {
     --specpath "$work" \
     --paths "$REPO_ROOT" \
     --paths "$REPO_ROOT/src" \
-    --hidden-import "src.mitm" \
-    --hidden-import "src.proxy_server" \
-    --hidden-import "src.domain_fronter" \
-    --hidden-import "src.h2_transport" \
-    --hidden-import "src.cert_installer" \
-    --hidden-import "src.lan_utils" \
+    --hidden-import "mitm" \
+    --hidden-import "proxy_server" \
+    --hidden-import "domain_fronter" \
+    --hidden-import "h2_transport" \
+    --hidden-import "cert_installer" \
+    --hidden-import "lan_utils" \
+    --hidden-import "logging_utils" \
+    --hidden-import "constants" \
+    --hidden-import "codec" \
     --collect-submodules "cryptography" \
     --collect-submodules "h2" \
     --target-arch "$arch" \
@@ -128,14 +177,29 @@ build_for_arch () {
   echo "$work/dist/shade-core-$arch"
 }
 
+place_output () {
+  local arch="$1"
+  local src="$2"
+  local dst
+  case "$arch" in
+    arm64)  dst="$OUT_ARM64" ;;
+    x86_64) dst="$OUT_X86_64" ;;
+    *) echo "error: unknown arch $arch" >&2; exit 1 ;;
+  esac
+  cp "$src" "$dst"
+  chmod +x "$dst"
+  echo "✔ $dst"
+  /usr/bin/file "$dst"
+}
+
 if [[ -n "$OTHER_PYTHON" ]]; then
-  echo "Building universal shade-core:"
-  echo "  $HOST_ARCH → $HOST_PYTHON"
+  echo "Building shade-core for both architectures:"
+  echo "  $HOST_ARCH  → $HOST_PYTHON"
   echo "  $OTHER_ARCH → $OTHER_PYTHON"
   HOST_BIN="$(build_for_arch "$HOST_ARCH" "$HOST_PYTHON" | tail -1)"
   OTHER_BIN="$(build_for_arch "$OTHER_ARCH" "$OTHER_PYTHON" | tail -1)"
-  echo "→ lipo → $OUT"
-  lipo -create "$HOST_BIN" "$OTHER_BIN" -output "$OUT"
+  place_output "$HOST_ARCH"  "$HOST_BIN"
+  place_output "$OTHER_ARCH" "$OTHER_BIN"
 else
   if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
     echo "error: universal shade-core required, but no runnable $OTHER_ARCH python was found." >&2
@@ -145,9 +209,5 @@ else
   echo "⚠︎  No $OTHER_ARCH python3 found — building single-arch ($HOST_ARCH) only."
   echo "    Set OTHER_PYTHON=/path/to/$OTHER_ARCH/python3 to build universal."
   HOST_BIN="$(build_for_arch "$HOST_ARCH" "$HOST_PYTHON" | tail -1)"
-  cp "$HOST_BIN" "$OUT"
+  place_output "$HOST_ARCH" "$HOST_BIN"
 fi
-
-chmod +x "$OUT"
-echo "✔ $OUT"
-/usr/bin/file "$OUT"

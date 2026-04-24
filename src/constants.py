@@ -132,7 +132,13 @@ SNI_REWRITE_SUFFIXES: tuple[str, ...] = (
     "youtube.com",
     "youtu.be",
     "youtube-nocookie.com",
-    "googlevideo.com",
+    # NOTE: googlevideo.com is intentionally NOT here. The front IP
+    # (google_ip / www.google.com edge) serves youtube.com HTML fine but
+    # doesn't terminate googlevideo.com video chunks reliably, so players
+    # stall ("endless spinner"). Routing it through the MITM + Apps Script
+    # relay path works because Apps Script runs on Google's own network
+    # and can fetch googlevideo.com internally. Large Range requests are
+    # split into parallel 256 KB sub-chunks by relay_parallel_range().
     "ytimg.com",
     "ggpht.com",
     "gvt1.com",

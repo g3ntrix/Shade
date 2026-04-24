@@ -10,8 +10,11 @@ APP_NAME="Shade"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 
-# 1. Make sure core is present (build if needed).
-if [[ ! -x "$ROOT/bundle/shade-core" ]]; then
+# 1. Make sure core binaries are present (build if needed).
+# We ship one per-arch (arm64 + x86_64) because lipo-ing PyInstaller
+# onefile binaries produces broken universal output (wrong payload
+# extracted at runtime). The Swift launcher picks by host arch.
+if [[ ! -x "$ROOT/bundle/shade-core-arm64" && ! -x "$ROOT/bundle/shade-core-x86_64" ]]; then
   echo "→ shade-core missing; building"
   "$ROOT/scripts/build-core.sh"
 fi
@@ -49,8 +52,25 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 lipo -create "$ARM_BIN" "$X86_BIN" -output "$APP/Contents/MacOS/$APP_NAME"
 chmod +x "$APP/Contents/MacOS/$APP_NAME"
 
-cp "$ROOT/bundle/shade-core" "$APP/Contents/Resources/shade-core"
-chmod +x "$APP/Contents/Resources/shade-core"
+# Copy both per-arch core binaries. The Swift launcher (CoreManager)
+# picks shade-core-<hostarch> at runtime. A Mac missing the slice it
+# needs sees a clear error instead of a broken Python-framework load.
+CORE_COPIED=0
+for arch in arm64 x86_64; do
+  src="$ROOT/bundle/shade-core-$arch"
+  if [[ -x "$src" ]]; then
+    cp "$src" "$APP/Contents/Resources/shade-core-$arch"
+    chmod +x "$APP/Contents/Resources/shade-core-$arch"
+    CORE_COPIED=$((CORE_COPIED + 1))
+  fi
+done
+if [[ "$CORE_COPIED" -eq 0 ]]; then
+  echo "error: no shade-core-* binaries found in $ROOT/bundle/" >&2
+  exit 1
+fi
+if [[ "$CORE_COPIED" -lt 2 ]]; then
+  echo "⚠︎  only $CORE_COPIED/2 core binaries embedded — app will not run on the missing architecture"
+fi
 
 # Copy SwiftPM-generated resource bundle (contains Shade.png/icns).
 ARM_RELEASE_DIR="$(dirname "$ARM_BIN")"
@@ -109,11 +129,15 @@ PLIST
 # deprecated and often leaves nested frameworks with mismatched flags).
 ENTITLEMENTS="$ROOT/scripts/entitlements.plist"
 echo "→ ad-hoc codesigning (hardened runtime, with entitlements)"
-codesign --force --sign - \
-  --options runtime \
-  --entitlements "$ENTITLEMENTS" \
-  --timestamp=none \
-  "$APP/Contents/Resources/shade-core"
+for arch in arm64 x86_64; do
+  bin="$APP/Contents/Resources/shade-core-$arch"
+  [[ -e "$bin" ]] || continue
+  codesign --force --sign - \
+    --options runtime \
+    --entitlements "$ENTITLEMENTS" \
+    --timestamp=none \
+    "$bin"
+done
 codesign --force --sign - \
   --options runtime \
   --entitlements "$ENTITLEMENTS" \

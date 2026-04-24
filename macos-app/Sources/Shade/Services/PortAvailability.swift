@@ -9,8 +9,13 @@ enum PortAvailability {
         guard fd >= 0 else { return false }
         defer { close(fd) }
 
-        var yes: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+        // Intentionally NOT setting SO_REUSEADDR here: we want "can I
+        // exclusively bind this port?", not "can I share it?". On macOS
+        // SO_REUSEADDR lets our probe succeed even when another process
+        // holds the port with SO_REUSEADDR — which gave false positives
+        // that let the core spawn then fail its real bind inside Python,
+        // producing the misleading "listener didn't come up in time"
+        // timeout on the Swift side.
 
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)

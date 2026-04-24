@@ -46,26 +46,40 @@ final class CoreManager {
     func start(settings: AppSettings) async throws {
         await stop()
 
-        guard let coreURL = Bundle.main.url(forResource: "shade-core", withExtension: nil),
-              FileManager.default.isExecutableFile(atPath: coreURL.path)
-        else {
-            throw NSError(
-                domain: "Shade", code: 10,
-                userInfo: [NSLocalizedDescriptionKey: "shade-core binary missing from app bundle — rebuild the app."]
-            )
-        }
-
+        // Pick the per-arch core binary (shade-core-arm64 or
+        // shade-core-x86_64). We ship two separate executables — NOT a
+        // lipo'd universal — because PyInstaller's onefile payload lives
+        // in appended bytes that lipo silently drops, causing Intel
+        // Macs to try to dlopen the arm64 Python framework.
         let hostArch = currentMachineArch()
-        let coreArchs = binaryArchs(at: coreURL.path)
-        if !coreArchs.isEmpty && !coreArchs.contains(hostArch) {
-            let available = coreArchs.joined(separator: ",")
+        guard let coreURL = resolveCoreBinary(hostArch: hostArch) else {
+            // Show which binaries ARE bundled so the error is actionable.
+            let candidates: [String] = ["shade-core-arm64", "shade-core-x86_64"]
+            let present: [String] = candidates.filter { name in
+                Bundle.main.url(forResource: name, withExtension: nil) != nil
+            }
+            let detail = present.isEmpty
+                ? "no shade-core-* binary is bundled"
+                : "bundled: \(present.joined(separator: ", "))"
             throw NSError(
                 domain: "Shade", code: 12,
-                userInfo: [NSLocalizedDescriptionKey: "shade-core is incompatible with this Mac architecture (host: \(hostArch), core: \(available)). Reinstall a universal build."]
+                userInfo: [NSLocalizedDescriptionKey:
+                    "shade-core is incompatible with this Mac (host arch: \(hostArch); \(detail)). Reinstall a build that includes this architecture."]
             )
         }
 
         let configURL = try store.writeCoreConfig(settings)
+
+        // Strip com.apple.quarantine from the nested core binary. When users
+        // AirDrop / download Shade.app, macOS tags every file inside with
+        // quarantine. With hardened runtime + ad-hoc signature, Gatekeeper
+        // on some OS versions silently refuses to exec quarantined nested
+        // Mach-Os — the parent opens fine (user approved once) but children
+        // don't inherit. This call is idempotent and cheap.
+        stripQuarantine(at: coreURL)
+
+        let msg = "[CoreManager] Launching \(coreURL.lastPathComponent) (arch: \(hostArch))"
+        self.onLog?(LogLine(timestamp: Date(), stream: .system, text: msg + "\n"))
 
         let p = Process()
         p.executableURL = coreURL
@@ -74,6 +88,7 @@ final class CoreManager {
         p.environment = [
             "HOME": NSHomeDirectory(),
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "PYTHONUNBUFFERED": "1", // Ensure logs aren't swallowed if it crashes
             // main.py also respects these — useful as a second channel.
             "DFT_SCRIPT_ID": settings.scriptID,
             "DFT_AUTH_KEY": settings.authKey
@@ -84,8 +99,15 @@ final class CoreManager {
         p.standardError = out
 
         p.terminationHandler = { [weak self] proc in
-            out.fileHandleForReading.readabilityHandler = nil
             guard let self else { return }
+            
+            // Read remaining data before closing the handler
+            if let data = try? out.fileHandleForReading.readToEnd(), !data.isEmpty {
+                let text = String(data: data, encoding: .utf8) ?? ""
+                self.onLog?(LogLine(timestamp: Date(), stream: .stdout, text: text))
+            }
+            out.fileHandleForReading.readabilityHandler = nil
+            
             self.process = nil
             self.pipe = nil
 
@@ -94,10 +116,14 @@ final class CoreManager {
             // banner after the user clicks Stop (SIGTERM = 15).
             let initiated = self.userInitiatedStop
             self.userInitiatedStop = false
+            
             let status = proc.terminationStatus
             let isCleanSignal = proc.terminationReason == .uncaughtSignal
                 && (status == SIGTERM || status == SIGKILL)
+            
             if initiated || status == 0 || isCleanSignal {
+                // Only reset status if it's currently starting/running/stopping.
+                // If it's already .error, we want to keep that error.
                 self.onStatus?(.stopped)
                 return
             }
@@ -121,14 +147,25 @@ final class CoreManager {
         process = p
         pipe = out
 
+        let probeHost = settings.listenHost == "0.0.0.0" ? "127.0.0.1" : settings.listenHost
         let ready = await waitForListener(host: settings.listenHost, port: settings.socksPort)
         if !ready {
-            // Core is still alive but the SOCKS listener never came up — surface
-            // as an error but leave the process running so the user can see
-            // whatever logs it's emitting.
+            // Core is still alive but the SOCKS listener never came up.
+            // Check if it already exited (which would have set status to .error)
+            if process == nil {
+                // terminationHandler already handled status and logs.
+                return
+            }
+
+            // Include the probe target so the user can cross-check against
+            // core's own "Listening SOCKS5 on …" log line. If the ports
+            // don't match, the user has a config mismatch; if they match
+            // but we still can't connect, another process is holding the
+            // port (now surfaces as an explicit error from the core too).
             throw NSError(
                 domain: "Shade", code: 11,
-                userInfo: [NSLocalizedDescriptionKey: "Core started but SOCKS5 listener didn't come up in time. Check Logs."]
+                userInfo: [NSLocalizedDescriptionKey:
+                    "Core started but SOCKS5 listener on \(probeHost):\(settings.socksPort) didn't come up in time. Check Logs — another process may be holding that port."]
             )
         }
         onStatus?(.running)
@@ -153,36 +190,40 @@ final class CoreManager {
     }
 
     private func currentMachineArch() -> String {
-        let (status, out) = runTool("/usr/bin/uname", ["-m"])
-        if status == 0 {
-            let trimmed = out.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { return trimmed }
-        }
-        return "unknown"
+        // sysctlbyname("hw.machine") returns the process's reported arch.
+        // Under Rosetta on Apple Silicon it returns "x86_64" — which is
+        // exactly what we want, since we're then an x86_64 process and
+        // need the x86_64 core binary. On native arm64 it returns "arm64".
+        var size = 0
+        sysctlbyname("hw.machine", nil, &size, nil, 0)
+        var buf = [CChar](repeating: 0, count: size)
+        sysctlbyname("hw.machine", &buf, &size, nil, 0)
+        let machine = String(cString: buf)
+        if machine.hasPrefix("arm") { return "arm64" }
+        if machine.hasPrefix("x86") { return "x86_64" }
+        return machine
     }
 
-    private func binaryArchs(at path: String) -> [String] {
-        let (status, out) = runTool("/usr/bin/lipo", ["-archs", path])
-        if status != 0 { return [] }
-        return out
-            .split { $0 == " " || $0 == "\n" || $0 == "\t" }
-            .map(String.init)
+    /// Return the bundled shade-core binary for this host, or nil if the
+    /// matching per-arch slice isn't present.
+    private func resolveCoreBinary(hostArch: String) -> URL? {
+        let primary = "shade-core-\(hostArch)"
+        if let url = Bundle.main.url(forResource: primary, withExtension: nil),
+           FileManager.default.isExecutableFile(atPath: url.path) {
+            return url
+        }
+        return nil
     }
 
-    private func runTool(_ executable: String, _ args: [String]) -> (Int32, String) {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: executable)
-        p.arguments = args
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = pipe
-        do {
-            try p.run()
-            p.waitUntilExit()
-        } catch {
-            return (-1, "")
-        }
-        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        return (p.terminationStatus, out)
+    /// Remove com.apple.quarantine (and provenance) from a bundled binary
+    /// using setxattr/removexattr. We use the syscalls directly instead of
+    /// shelling out to /usr/bin/xattr because /usr/bin/xattr itself may be
+    /// gated behind command-line-tools on stripped-down systems.
+    private func stripQuarantine(at url: URL) {
+        let path = (url.path as NSString).fileSystemRepresentation
+        // XATTR_NOFOLLOW = 0x0001. Errors are ignored — if the attr isn't
+        // there, removexattr returns ENOATTR and that's fine.
+        _ = removexattr(path, "com.apple.quarantine", 0x0001)
+        _ = removexattr(path, "com.apple.provenance", 0x0001)
     }
 }

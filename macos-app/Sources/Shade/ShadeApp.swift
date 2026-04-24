@@ -101,12 +101,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func killLeftoverProcesses() {
-        for name in ["shade-core"] {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-            p.arguments = ["-f", name]
-            try? p.run()
-            p.waitUntilExit()
-        }
+        // `-f shade-core` matches both shade-core-arm64 and shade-core-x86_64
+        // (and any legacy shade-core). pkill uses the full argv for -f.
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        p.arguments = ["-f", "shade-core"]
+        try? p.run()
+        p.waitUntilExit()
     }
 }

@@ -861,6 +861,178 @@ class DomainFronter:
         result += "\r\n"
         return result.encode() + full_body
 
+    async def relay_parallel_range(self, method: str, url: str,
+                                   headers: dict, body: bytes = b"",
+                                   chunk_size: int = 256 * 1024,
+                                   max_parallel: int = 16) -> bytes:
+        """Relay a client-originated Range request using parallel sub-chunks.
+
+        YouTube/video players send large Range requests (often multi-MB).
+        A single Apps Script relay can't move that much data inside
+        RELAY_TIMEOUT and will also blow Apps Script's response size limit.
+
+        Strategy:
+          1. Parse the client's Range header.
+          2. For a small range (≤ chunk_size), do a single relay — no
+             benefit to splitting.
+          3. For a large range, split into chunk_size sub-ranges and
+             fetch them in parallel via H2 multiplexing.
+          4. Reassemble and return a 206 whose Content-Range exactly
+             matches what the client can actually get (clamped to total).
+
+        The first sub-chunk doubles as a probe that tells us the origin's
+        total size via Content-Range. If the origin returns 200 (no range
+        support) we just return what we got.
+        """
+        if method != "GET" or body:
+            return await self.relay(method, url, headers, body)
+
+        # Find client's Range header (preserving original key casing).
+        client_range_val = None
+        for k, v in (headers or {}).items():
+            if k.lower() == "range":
+                client_range_val = v
+                break
+        if not client_range_val:
+            return await self.relay(method, url, headers, body)
+
+        # Parse "bytes=start-end" (end optional). Suffix ranges
+        # ("bytes=-N") and multi-range ("bytes=0-99,200-299") are uncommon
+        # for video — punt those to a plain relay.
+        m = re.match(r"\s*bytes\s*=\s*(\d+)\s*-\s*(\d*)\s*$",
+                     client_range_val)
+        if not m:
+            return await self.relay(method, url, headers, body)
+        req_start = int(m.group(1))
+        req_end: int | None = int(m.group(2)) if m.group(2) else None
+
+        # Small range: no point splitting.
+        if req_end is not None and (req_end - req_start + 1) <= chunk_size:
+            return await self.relay(method, url, headers, body)
+
+        # Probe with the first sub-chunk at req_start.
+        probe_end = req_start + chunk_size - 1
+        probe_headers = dict(headers)
+        # Overwrite existing Range header (preserve its original key).
+        for k in list(probe_headers):
+            if k.lower() == "range":
+                probe_headers[k] = f"bytes={req_start}-{probe_end}"
+                break
+        first_resp = await self.relay("GET", url, probe_headers, b"")
+        status, resp_hdrs, resp_body = self._split_raw_response(first_resp)
+
+        # Origin didn't honor range — pass through as-is.
+        if status != 206:
+            return first_resp
+
+        # Parse total size from Content-Range: "bytes 0-262143/1048576"
+        content_range = resp_hdrs.get("content-range", "")
+        cm = re.search(r"/(\d+)", content_range)
+        if not cm:
+            # Can't plan without total — just return the probe.
+            return first_resp
+        total_size = int(cm.group(1))
+
+        # Effective end the client can actually get.
+        actual_end = total_size - 1
+        if req_end is not None:
+            actual_end = min(req_end, actual_end)
+
+        # Probe already covered the whole requested range.
+        if req_start + len(resp_body) > actual_end:
+            truncated = resp_body[: actual_end - req_start + 1]
+            return self._build_206_response(
+                resp_hdrs, req_start, actual_end, total_size, truncated
+            )
+
+        # Compute remaining sub-ranges after the probe.
+        ranges: list[tuple[int, int]] = []
+        s = req_start + len(resp_body)
+        while s <= actual_end:
+            e = min(s + chunk_size - 1, actual_end)
+            ranges.append((s, e))
+            s = e + 1
+
+        log.info(
+            "Parallel range: bytes=%d-%d/%d, %d sub-chunks of %d KB",
+            req_start, actual_end, total_size,
+            len(ranges) + 1, chunk_size // 1024,
+        )
+
+        sem = asyncio.Semaphore(max_parallel)
+
+        async def fetch_sub(s: int, e: int, max_tries: int = 3) -> bytes:
+            async with sem:
+                rh = dict(headers)
+                for k in list(rh):
+                    if k.lower() == "range":
+                        rh[k] = f"bytes={s}-{e}"
+                        break
+                expected = e - s + 1
+                last_err: str | None = None
+                for attempt in range(max_tries):
+                    try:
+                        raw = await self.relay("GET", url, rh, b"")
+                        _, _, chunk_body = self._split_raw_response(raw)
+                        if len(chunk_body) == expected:
+                            return chunk_body
+                        last_err = (
+                            f"short chunk {len(chunk_body)}/{expected} B"
+                        )
+                    except Exception as ex:
+                        last_err = repr(ex)
+                    log.warning(
+                        "sub-range %d-%d retry %d/%d: %s",
+                        s, e, attempt + 1, max_tries, last_err,
+                    )
+                    await asyncio.sleep(0.3 * (attempt + 1))
+                raise RuntimeError(
+                    f"sub-range {s}-{e} failed after {max_tries} tries: "
+                    f"{last_err}"
+                )
+
+        t0 = asyncio.get_event_loop().time()
+        results = await asyncio.gather(
+            *[fetch_sub(s, e) for s, e in ranges],
+            return_exceptions=True,
+        )
+        elapsed = asyncio.get_event_loop().time() - t0
+
+        parts = [resp_body]
+        for i, r in enumerate(results):
+            if isinstance(r, Exception):
+                log.error("Sub-range %d failed: %s", i, r)
+                return self._error_response(
+                    502, f"Parallel range failed: {r}"
+                )
+            parts.append(r)
+
+        full_body = b"".join(parts)
+        kbs = (len(full_body) / 1024) / elapsed if elapsed > 0 else 0
+        log.info(
+            "Parallel range complete: %d B in %.2fs = %.1f KB/s",
+            len(full_body), elapsed, kbs,
+        )
+        return self._build_206_response(
+            resp_hdrs, req_start, actual_end, total_size, full_body
+        )
+
+    @staticmethod
+    def _build_206_response(resp_hdrs: dict, start: int, end: int,
+                            total: int, body: bytes) -> bytes:
+        """Build a 206 Partial Content response from origin headers + body."""
+        lines = ["HTTP/1.1 206 Partial Content"]
+        skip = {
+            "transfer-encoding", "connection", "keep-alive",
+            "content-length", "content-encoding", "content-range",
+        }
+        for k, v in resp_hdrs.items():
+            if k.lower() not in skip:
+                lines.append(f"{k}: {v}")
+        lines.append(f"Content-Range: bytes {start}-{end}/{total}")
+        lines.append(f"Content-Length: {len(body)}")
+        return ("\r\n".join(lines) + "\r\n\r\n").encode() + body
+
     @staticmethod
     def _rewrite_206_to_200(raw: bytes) -> bytes:
         """Rewrite a 206 Partial Content response to 200 OK.
