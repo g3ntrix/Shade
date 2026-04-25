@@ -3,9 +3,6 @@ import SwiftUI
 @main
 struct ShadeApp: App {
     @StateObject private var appState = AppState()
-
-    /// Ensure shade-core and tun2socks are killed when the app quits,
-    /// even if the user Force-Quits or Cmd-Q without clicking Stop.
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
 
     var body: some Scene {
@@ -15,10 +12,7 @@ struct ShadeApp: App {
                 .frame(minWidth: 960, minHeight: 620)
                 .preferredColorScheme(.dark)
                 .onAppear {
-                    delegate.appState = appState
-                }
-                .onChange(of: appState.status) { _ in
-                    delegate.updateIcon()
+                    delegate.setup(appState)
                 }
         }
         .windowStyle(.hiddenTitleBar)
@@ -35,28 +29,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var appState: AppState?
     var statusItem: NSStatusItem?
     var popover = NSPopover()
+    private var eventMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenuBar()
+    }
+    
+    func setup(_ appState: AppState) {
+        self.appState = appState
+        updatePopoverContent()
+        updateIcon()
     }
 
     private func setupMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
-        updateIcon()
-        
         if let button = statusItem?.button {
             button.action = #selector(togglePopover)
             button.target = self
+            button.image = NSImage(systemSymbolName: "bolt.shield", accessibilityDescription: "Shade")
         }
 
-        // Setup Popover
-        popover.contentSize = NSSize(width: 280, height: 320)
         popover.behavior = .transient
-        if let appState = appState {
-            popover.contentViewController = NSHostingController(rootView: MenuBarView(onClose: { [weak self] in
-                self?.popover.performClose(nil)
-            }).environmentObject(appState))
+        updatePopoverContent()
+    }
+    
+    private func updatePopoverContent() {
+        guard let appState = appState else { return }
+        let rootView = MenuBarView(onClose: { [weak self] in
+            self?.closePopover()
+        }).environmentObject(appState)
+        
+        if let hostingController = popover.contentViewController as? NSHostingController<AnyView> {
+            hostingController.rootView = AnyView(rootView)
+        } else {
+            popover.contentViewController = NSHostingController(rootView: AnyView(rootView))
         }
     }
 
@@ -67,21 +74,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func togglePopover() {
+        if popover.isShown {
+            closePopover()
+        } else {
+            showPopover()
+        }
+    }
+    
+    private func showPopover() {
         guard let button = statusItem?.button else { return }
         
-        if popover.isShown {
-            popover.performClose(nil)
-        } else {
-            // Ensure appState is connected to the view
-            if let appState = appState, popover.contentViewController == nil {
-                popover.contentViewController = NSHostingController(rootView: MenuBarView(onClose: { [weak self] in
-                    self?.popover.performClose(nil)
-                }).environmentObject(appState))
+        updatePopoverContent()
+        updateIcon()
+        
+        // Ensure the popover size is recalculated
+        if let contentVC = popover.contentViewController {
+            let size = contentVC.view.fittingSize
+            popover.contentSize = NSSize(width: 270, height: size.height)
+        }
+        
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
+        
+        // Event monitor to catch clicks outside the popover if .transient fails
+        eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            if self?.popover.isShown == true {
+                self?.closePopover()
             }
-            
-            updateIcon()
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+        }
+    }
+    
+    private func closePopover() {
+        popover.performClose(nil)
+        if let monitor = eventMonitor {
+            NSEvent.removeMonitor(monitor)
+            eventMonitor = nil
         }
     }
 
@@ -101,8 +128,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func killLeftoverProcesses() {
-        // `-f shade-core` matches both shade-core-arm64 and shade-core-x86_64
-        // (and any legacy shade-core). pkill uses the full argv for -f.
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
         p.arguments = ["-f", "shade-core"]
@@ -110,3 +135,4 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         p.waitUntilExit()
     }
 }
+
