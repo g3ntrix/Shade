@@ -167,32 +167,31 @@ final class AppState: ObservableObject {
         status = .starting
         startedAt = Date()
         do {
-            try await core.start(settings: effective)
-
-            // ── Certificate install (async, non-blocking) ────────────────
-            Task {
-                if !FileManager.default.fileExists(atPath: CertManager.caPath) {
-                    try? await Task.sleep(nanoseconds: 3_000_000_000)
-                }
-                let result = await CertManager.installIfNeeded()
-                switch result {
-                case .installedOK:
-                    append(LogLine(timestamp: Date(), stream: .system,
-                        text: "✓ Certificate installed — restart your browser to apply.\n"))
-                    hasShownCertRestartSucceeded = false
-                case .cancelled:
-                    append(LogLine(timestamp: Date(), stream: .system,
-                        text: "⚠ Certificate install cancelled — HTTPS pages may show SSL errors.\n"))
-                case .failed(let msg) where !msg.contains("not yet written"):
-                    append(LogLine(timestamp: Date(), stream: .system,
-                        text: "⚠ Certificate install failed: \(msg)\n"))
-                default:
-                    break
-                }
-                if case .alreadyTrusted = result {
-                    hasShownCertRestartSucceeded = true
-                }
+            // ── Certificate install (sync) ──────────────────────────────
+            // We do this before starting the core so that:
+            // 1. The CA cert is already trusted when the core starts.
+            // 2. If generating the cert triggers a core launch, it happens here
+            //    rather than inside the main core's startup window.
+            let certResult = await CertManager.installIfNeeded()
+            switch certResult {
+            case .installedOK:
+                append(LogLine(timestamp: Date(), stream: .system,
+                    text: "✓ Certificate installed — restart your browser to apply.\n"))
+                hasShownCertRestartSucceeded = false
+            case .cancelled:
+                append(LogLine(timestamp: Date(), stream: .system,
+                    text: "⚠ Certificate install cancelled — HTTPS pages may show SSL errors.\n"))
+            case .failed(let msg):
+                append(LogLine(timestamp: Date(), stream: .system,
+                    text: "⚠ Certificate install failed: \(msg)\n"))
+            default:
+                break
             }
+            if case .alreadyTrusted = certResult {
+                hasShownCertRestartSucceeded = true
+            }
+
+            try await core.start(settings: effective)
 
             // ── System proxy ─────────────────────────────────────────────
             if settings.useSystemProxy {

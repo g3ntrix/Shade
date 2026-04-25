@@ -158,12 +158,6 @@ class ProxyServer:
         self.mitm = None
         self._cache = ResponseCache(max_mb=CACHE_MAX_MB)
         self._direct_fail_until: dict[str, float] = {}
-        # IP literals that we've confirmed speak non-TLS traffic (e.g.
-        # Telegram MTProto over SOCKS5 to 149.154.x.x). We can't relay
-        # raw TCP through HTTP-only Apps Script, and MITM TLS will always
-        # fail on them, so we fast-close subsequent CONNECTs instead of
-        # flooding logs with endless handshake-failure warnings.
-        self._nontls_ip_until: dict[str, float] = {}
         self._servers: list[asyncio.base_events.Server] = []
 
         # hosts override — DNS fake-map: domain/suffix → IP
@@ -235,17 +229,6 @@ class ProxyServer:
 
     def _remember_direct_failure(self, host: str, ttl: int = 300) -> None:
         self._direct_fail_until[host] = time.time() + ttl
-
-    def _nontls_ip_suppressed(self, host: str) -> bool:
-        until = self._nontls_ip_until.get(host)
-        if until and time.time() < until:
-            return True
-        if until:
-            self._nontls_ip_until.pop(host, None)
-        return False
-
-    def _remember_nontls_ip(self, host: str, ttl: int = 60) -> None:
-        self._nontls_ip_until[host] = time.time() + ttl
 
     @staticmethod
     def _header_value(headers: dict | None, name: str) -> str:
@@ -340,42 +323,17 @@ class ProxyServer:
                 log.info(log_msg, *log_args)
 
     async def start(self):
-        # HTTP listener is required — let any bind error propagate so the
-        # caller (main.py) can print a clean error and exit non-zero.
-        try:
-            http_srv = await asyncio.start_server(self._on_client, self.host, self.port)
-        except OSError as e:
-            log.error("HTTP listener failed on %s:%d: %s — is another process "
-                      "holding that port?", self.host, self.port, e)
-            raise
-
+        http_srv = await asyncio.start_server(self._on_client, self.host, self.port)
         socks_srv = None
+
         if self.socks_enabled:
             try:
                 socks_srv = await asyncio.start_server(
                     self._on_socks5_client, self.socks_host, self.socks_port
                 )
             except OSError as e:
-                # SOCKS5 is advertised by the Swift launcher — if it can't
-                # bind, the Swift-side `waitForListener` will time out and
-                # surface "listener didn't come up in time" to the user.
-                # Fail loudly so the GUI flips to an actionable error rather
-                # than hanging for 8 s and then resetting to "Ready".
-                log.error(
-                    "SOCKS5 listener failed on %s:%d: %s — is another process "
-                    "holding that port? (lsof -nP -iTCP:%d -sTCP:LISTEN)",
-                    self.socks_host, self.socks_port, e, self.socks_port,
-                )
-                # Tear down the HTTP listener we already bound, then re-raise
-                # so the process exits with a non-zero status instead of
-                # silently serving HTTP-only while the Swift side waits on
-                # SOCKS5 that never comes.
-                http_srv.close()
-                try:
-                    await http_srv.wait_closed()
-                except Exception:
-                    pass
-                raise
+                log.error("SOCKS5 listener failed on %s:%d: %s",
+                          self.socks_host, self.socks_port, e)
 
         self._servers = [s for s in (http_srv, socks_srv) if s]
 
@@ -383,24 +341,12 @@ class ProxyServer:
             "Listening HTTP  on %s:%d — configure your HTTP proxy to this address",
             self.host, self.port,
         )
-        if socks_srv is not None:
-            log.info(
-                "Listening SOCKS5 on %s:%d — configure your SOCKS5 proxy to this address",
-                self.socks_host, self.socks_port,
-            )
-
-        # Build the gather list dynamically so we don't crash with
-        # AttributeError when SOCKS5 is disabled (socks_srv is None).
-        forevers = [http_srv.serve_forever()]
-        if socks_srv is not None:
-            forevers.append(socks_srv.serve_forever())
-
-        async with http_srv:
-            if socks_srv is not None:
-                async with socks_srv:
-                    await asyncio.gather(*forevers)
-            else:
-                await asyncio.gather(*forevers)
+        log.info(
+            "Listening SOCKS5 on %s:%d — configure your SOCKS5 proxy to this address",
+            self.host, self.socks_port,
+        )
+        async with http_srv, socks_srv:
+            await asyncio.gather(http_srv.serve_forever(), socks_srv.serve_forever())
 
     async def stop(self):
         """Shut down all listeners and release relay resources."""
@@ -640,12 +586,6 @@ class ProxyServer:
     async def _do_socks5_tunnel(self, host: str, port: int, reader, writer):
         if self.mode == "apps_script":
             if self._is_ip_literal(host):
-                # Known non-TLS IP literal (e.g. Telegram MTProto DC). Close
-                # immediately — we can't tunnel raw TCP through an HTTP-only
-                # relay, and repeated MITM attempts just flood the logs.
-                if self._nontls_ip_suppressed(host):
-                    log.debug("SOCKS5 fast-close %s:%d (non-TLS IP)", host, port)
-                    return
                 if not self._direct_temporarily_disabled(host):
                     log.info("SOCKS5 direct tunnel → %s:%d (IP literal)", host, port)
                     ok = await self._do_plain_tcp_tunnel(host, port, reader, writer, fragment=True)
@@ -910,6 +850,14 @@ class ProxyServer:
 
         # Step 2: open outgoing TLS to target IP with the safe SNI
         ssl_ctx_client = ssl.create_default_context()
+        # Frozen app bundles on macOS can't read the system CA store, so
+        # load certifi's bundle when available — otherwise verification
+        # fails with "unable to get local issuer certificate".
+        try:
+            import certifi
+            ssl_ctx_client.load_verify_locations(cafile=certifi.where())
+        except Exception:
+            pass
         if not self.fronter.verify_ssl:
             ssl_ctx_client.check_hostname = False
             ssl_ctx_client.verify_mode = ssl.CERT_NONE
@@ -980,20 +928,13 @@ class ProxyServer:
             #     SNI-rewrite path can handle.
             #   • Client CONNECTs but never speaks TLS (some probes).
             if _is_ip_literal(host) and port == 443:
-                # Remember this IP so we fast-close next time instead of
-                # retrying the (always-failing) TLS handshake. The warning
-                # is only logged on the first hit per TTL window.
-                first_time = not self._nontls_ip_suppressed(host)
-                self._remember_nontls_ip(host, ttl=60)
-                if first_time:
-                    log.warning(
-                        "MITM TLS handshake failed for %s:%d (%s). "
-                        "Likely non-TLS traffic (e.g. Telegram MTProto over "
-                        "SOCKS5). Cannot relay raw TCP to a blocked IP — "
-                        "subsequent CONNECTs to this IP will be closed "
-                        "silently for 60 s.",
-                        host, port, e,
-                    )
+                log.warning(
+                    "MITM TLS handshake failed for %s:%d (%s). "
+                    "Likely non-TLS traffic (e.g. Telegram MTProto over "
+                    "SOCKS5). Cannot relay raw TCP to a blocked IP — "
+                    "use the HTTP proxy instead so hostnames are preserved.",
+                    host, port, e,
+                )
             elif port != 443:
                 log.debug(
                     "TLS handshake skipped for %s:%d (non-HTTPS): %s",
@@ -1245,13 +1186,11 @@ class ProxyServer:
           challenge pages.
         """
         if method == "GET" and not body:
-            # Client already sent a Range header (video players, range
-            # downloads, resumable fetches). A large Range can't fit in
-            # one relay round-trip — split it into parallel sub-chunks.
+            # Respect client's own Range header verbatim.
             if headers:
                 for k in headers:
                     if k.lower() == "range":
-                        return await self.fronter.relay_parallel_range(
+                        return await self.fronter.relay(
                             method, url, headers, body
                         )
             # Only probe with Range when the URL looks like a big file.

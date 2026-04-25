@@ -145,7 +145,7 @@ build_for_arch () {
   install_deps pip wheel
 
   echo "→ [$arch] installing core deps + PyInstaller"
-  install_deps "cryptography>=41" "h2>=4.1" "pyinstaller>=6.0"
+  install_deps "cryptography>=41" "h2>=4.1" "certifi>=2024.2.2" "pyinstaller>=6.0"
 
   echo "→ [$arch] running PyInstaller"
   # --onefile for a single binary. --collect-all cryptography pulls in the
@@ -171,6 +171,8 @@ build_for_arch () {
     --hidden-import "codec" \
     --collect-submodules "cryptography" \
     --collect-submodules "h2" \
+    --collect-data "certifi" \
+    --hidden-import "certifi" \
     --target-arch "$arch" \
     "$ROOT/core/shade_core.py"
 

@@ -15,9 +15,12 @@ final class CoreManager {
 
     /// Waits for `host:socksPort` to accept TCP. Returns true when the core
     /// is ready to receive SOCKS5 traffic (means the listener fully started).
-    /// Times out after ~8 s.
+    /// Times out after ~30 s — older Intel Macs need this much to unpack
+    /// the PyInstaller onefile archive and import cryptography/h2 on a
+    /// cold filesystem cache. The same core comes up in ~400 ms from a
+    /// warm Terminal session, so the long ceiling only costs us on failure.
     private func waitForListener(host: String, port: Int) async -> Bool {
-        let deadline = Date().addingTimeInterval(8)
+        let deadline = Date().addingTimeInterval(30)
         while Date() < deadline {
             if canConnect(host: host, port: port) { return true }
             try? await Task.sleep(nanoseconds: 250_000_000)

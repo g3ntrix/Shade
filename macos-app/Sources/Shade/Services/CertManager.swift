@@ -47,7 +47,12 @@ enum CertManager {
         }
         if isTrusted() { return .alreadyTrusted }
 
-        return await installIntoSystemKeychain(removingExisting: false)
+        // Not trusted — run the same full fresh-install path as the Repair
+        // button. Reusing a stale on-disk CA whose keychain entry the user
+        // deleted leaves the single sudo helper call unable to register
+        // trust; regenerating the CA and pushing it through makes Start
+        // self-heal the keychain the way Repair does.
+        return await reinstallFreshCertificate()
     }
 
     /// Removes all existing MasterHttpRelayVPN certs from user + system

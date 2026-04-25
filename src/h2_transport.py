@@ -107,6 +107,11 @@ class H2Transport:
     async def _do_connect(self):
         """Establish the HTTP/2 connection with optimized socket settings."""
         ctx = ssl.create_default_context()
+        try:
+            import certifi
+            ctx.load_verify_locations(cafile=certifi.where())
+        except Exception:
+            pass
         # Advertise both h2 and http/1.1 — some DPI blocks h2-only ALPN
         ctx.set_alpn_protocols(["h2", "http/1.1"])
         if not self.verify_ssl:

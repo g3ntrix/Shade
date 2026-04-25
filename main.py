@@ -139,6 +139,10 @@ def main():
     elif os.environ.get("DFT_HOST"):
         config["listen_host"] = os.environ["DFT_HOST"]
 
+    setup_logging(config.get("log_level", "INFO"))
+    log = logging.getLogger("Main")
+    print_banner(__version__)
+
     if args.log_level is not None:
         config["log_level"] = args.log_level
     elif os.environ.get("DFT_LOG_LEVEL"):
@@ -157,8 +161,6 @@ def main():
         )
         sys.exit(1)
 
-    # Always Apps Script mode — force-set for backward-compat configs.
-    config["mode"] = "apps_script"
     sid = config.get("script_ids") or config.get("script_id")
     if not sid or (isinstance(sid, str) and sid == "YOUR_APPS_SCRIPT_DEPLOYMENT_ID"):
         print("Missing 'script_id' in config.")
@@ -175,16 +177,11 @@ def main():
 
     # ── Certificate installation ──────────────────────────────────────────
     if args.install_cert:
-        setup_logging("INFO")
         _log = logging.getLogger("Main")
         _log.info("Installing CA certificate…")
         ok = install_ca(CA_CERT_FILE)
         sys.exit(0 if ok else 1)
 
-    setup_logging(config.get("log_level", "INFO"))
-    log = logging.getLogger("Main")
-
-    print_banner(__version__)
     log.info("DomainFront Tunnel starting (Apps Script relay)")
 
     log.info("Apps Script relay : SNI=%s → script.google.com",
