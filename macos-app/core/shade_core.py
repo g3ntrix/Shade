@@ -37,6 +37,32 @@ def _writable_app_dir() -> str:
     return path
 
 
+def _bootstrap_ssl_ca_bundle() -> None:
+    """Point Python's default SSL context at certifi's CA bundle.
+
+    On a frozen macOS app, OpenSSL's compiled-in default CA paths point
+    at the build host's homebrew/system locations and aren't present on
+    the user's machine, so every outbound TLS handshake fails with
+    "unable to get local issuer certificate". Setting SSL_CERT_FILE /
+    SSL_CERT_DIR before any ssl module use makes ssl.create_default_context()
+    pick up certifi's bundle globally — covers paths we patched explicitly
+    and any we haven't.
+    """
+    try:
+        import certifi
+    except Exception as exc:
+        print(f"[bootstrap] certifi import failed: {exc!r}", flush=True)
+        return
+    cafile = certifi.where()
+    if not cafile or not os.path.exists(cafile):
+        print(f"[bootstrap] certifi cafile missing: {cafile!r}", flush=True)
+        return
+    os.environ.setdefault("SSL_CERT_FILE", cafile)
+    os.environ.setdefault("SSL_CERT_DIR", os.path.dirname(cafile))
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", cafile)
+    print(f"[bootstrap] SSL CA bundle: {cafile}", flush=True)
+
+
 def _patch_ca_paths() -> None:
     """Redirect mitm.CA_DIR (and friends) into our writable app-support dir."""
     app_dir = _writable_app_dir()
@@ -69,6 +95,7 @@ def main() -> None:
         os.chdir(app_dir)
         print(f"[bootstrap] CWD set to: {app_dir}", flush=True)
 
+        _bootstrap_ssl_ca_bundle()
         _patch_ca_paths()
 
         # Late import: after patching mitm, `main.py` will pull in the patched
