@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 @main
 struct ShadeApp: App {
@@ -30,6 +31,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
     var popover = NSPopover()
     private var eventMonitor: Any?
+    private var statusCancellable: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenuBar()
@@ -39,6 +41,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         self.appState = appState
         updatePopoverContent()
         updateIcon()
+
+        // Keep the icon in sync with the live status — fires immediately on
+        // every state transition rather than only when the popover opens.
+        statusCancellable = appState.$status
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateIcon() }
     }
 
     private func setupMenuBar() {
@@ -83,19 +91,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     private func showPopover() {
         guard let button = statusItem?.button else { return }
-        
+
         updatePopoverContent()
-        updateIcon()
-        
+        // Icon is always up-to-date via the Combine stream; no need to duplicate here.
+
         // Ensure the popover size is recalculated
         if let contentVC = popover.contentViewController {
             let size = contentVC.view.fittingSize
             popover.contentSize = NSSize(width: 270, height: size.height)
         }
-        
+
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
-        
+
         // Event monitor to catch clicks outside the popover if .transient fails
         eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             if self?.popover.isShown == true {

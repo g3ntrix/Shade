@@ -139,6 +139,7 @@ build_for_arch () {
     --noconfirm \
     --clean \
     --onefile \
+    --noupx \
     --name "shade-core-$arch" \
     --distpath "$work/dist" \
     --workpath "$work/work" \
@@ -166,7 +167,8 @@ build_for_arch () {
     echo "error: PyInstaller failed to produce $bin_path" >&2
     exit 1
   fi
-  echo "$bin_path"
+  # Export for the caller
+  GLOBAL_BIN_PATH="$bin_path"
 }
 
 place_output () {
@@ -190,18 +192,21 @@ if [[ -n "$OTHER_PYTHON" ]]; then
   echo "  $OTHER_ARCH → $OTHER_PYTHON"
   
   echo "--- Building $HOST_ARCH ---"
-  HOST_BIN_PATH=$(build_for_arch "$HOST_ARCH" "$HOST_PYTHON" | tail -1)
-  place_output "$HOST_ARCH" "$HOST_BIN_PATH"
+  GLOBAL_BIN_PATH=""
+  build_for_arch "$HOST_ARCH" "$HOST_PYTHON"
+  place_output "$HOST_ARCH" "$GLOBAL_BIN_PATH"
   
   echo "--- Building $OTHER_ARCH ---"
-  OTHER_BIN_PATH=$(build_for_arch "$OTHER_ARCH" "$OTHER_PYTHON" | tail -1)
-  place_output "$OTHER_ARCH" "$OTHER_BIN_PATH"
+  GLOBAL_BIN_PATH=""
+  build_for_arch "$OTHER_ARCH" "$OTHER_PYTHON"
+  place_output "$OTHER_ARCH" "$GLOBAL_BIN_PATH"
 else
   if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
     echo "error: universal shade-core required, but no runnable $OTHER_ARCH python was found." >&2
     exit 1
   fi
   echo "⚠︎  No $OTHER_ARCH python3 found — building single-arch ($HOST_ARCH) only."
-  HOST_BIN_PATH=$(build_for_arch "$HOST_ARCH" "$HOST_PYTHON" | tail -1)
-  place_output "$HOST_ARCH" "$HOST_BIN_PATH"
+  GLOBAL_BIN_PATH=""
+  build_for_arch "$HOST_ARCH" "$HOST_PYTHON"
+  place_output "$HOST_ARCH" "$GLOBAL_BIN_PATH"
 fi
