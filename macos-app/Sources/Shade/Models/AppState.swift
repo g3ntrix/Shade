@@ -65,6 +65,17 @@ final class AppState: ObservableObject {
 
     @AppStorage("hasShownCertRestartSucceeded") var hasShownCertRestartSucceeded = false
 
+    // MARK: - IP Scanner state
+
+    enum ScanState: Equatable {
+        case idle
+        case scanning
+        case done(recommendedIP: String?)
+        case failed
+    }
+    @Published var scanState: ScanState = .idle
+    @Published var scanLog: [String]    = []
+
     private let store = ConfigStore()
     private let core  = CoreManager()
 
@@ -361,6 +372,50 @@ final class AppState: ObservableObject {
 
     private nonisolated static func shorten(_ message: String) -> String {
         message.count > 60 ? String(message.prefix(60)) + "…" : message
+    }
+
+    // MARK: - IP Scanner
+
+    func runIPScan() async {
+        guard scanState != .scanning else { return }
+        scanState = .scanning
+        scanLog   = []
+
+        let recommendedIP = await core.runScan(settings: settings) { [weak self] chunk in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // Split chunks into lines so the UI can show them one-by-one.
+                let lines = chunk.components(separatedBy: .newlines)
+                for line in lines {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty { self.scanLog.append(trimmed) }
+                }
+            }
+        }
+
+        if recommendedIP != nil {
+            scanState = .done(recommendedIP: recommendedIP)
+        } else {
+            // Check if we got any output at all (might just mean no IPs reachable).
+            let gotOutput = scanLog.contains { $0.contains("/") || $0.contains("ms") || $0.contains("timeout") }
+            scanState = gotOutput ? .done(recommendedIP: nil) : .failed
+        }
+    }
+
+    func cancelScan() {
+        // The process terminates itself when `runScan` is abandoned;
+        // just reset the UI state.
+        scanState = .idle
+        scanLog   = []
+    }
+
+    func applyScanResult(_ ip: String) {
+        settings.googleIP = ip
+        saveSettings()
+        append(LogLine(timestamp: Date(), stream: .system,
+            text: "✓ google_ip updated to \(ip) from scanner — restart to apply.\n"))
+        scanState = .idle
+        scanLog   = []
     }
 
 }

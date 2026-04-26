@@ -110,19 +110,11 @@ build_for_arch () {
   local vpy="$work/venv/bin/python"
 
   # ── Install deps ──────────────────────────────────────────────────────────
-  # Offline-first strategy:
-  #   1. Try installing from the local vendor cache (--no-index).
-  #   2. If that fails (missing wheel for this Python/arch), fall back to
-  #      PyPI and PIP-DOWNLOAD into vendor/ so the NEXT build can run
-  #      offline.
-  # Result: first build online populates the cache; every subsequent
-  # build — online or not — reuses it without touching PyPI.
   local vendor_dir="$ROOT/vendor"
   mkdir -p "$vendor_dir"
 
   install_deps () {
     local pkgs=("$@")
-    # Try offline first. Pip exits non-zero if any wheel is missing.
     if run_for_arch "$arch" "$vpy" -m pip install --quiet \
          --no-index --find-links="$vendor_dir" \
          "${pkgs[@]}" 2>/dev/null; then
@@ -131,25 +123,18 @@ build_for_arch () {
     fi
     echo "  [online]  vendor cache miss — fetching ${pkgs[*]} from PyPI"
     run_for_arch "$arch" "$vpy" -m pip install --quiet "${pkgs[@]}"
-    # Populate vendor/ with the exact wheels pip just resolved (binary
-    # only — source distributions don't help the offline path). Failures
-    # here are non-fatal: the install already succeeded.
     run_for_arch "$arch" "$vpy" -m pip download --quiet \
       --dest "$vendor_dir" --only-binary=:all: \
       "${pkgs[@]}" 2>/dev/null || true
   }
 
   echo "→ [$arch] installing pip & wheel"
-  # Fresh venv: pip picks latest from the resolver; no --upgrade needed
-  # (and --upgrade isn't accepted by `pip download` cleanly).
   install_deps pip wheel
 
   echo "→ [$arch] installing core deps + PyInstaller"
   install_deps "cryptography>=41" "h2>=4.1" "certifi>=2024.2.2" "pyinstaller>=6.0"
 
   echo "→ [$arch] running PyInstaller"
-  # --onefile for a single binary. --collect-all cryptography pulls in the
-  # runtime wheels pyinstaller sometimes misses on universal builds.
   run_for_arch "$arch" "$vpy" -m PyInstaller \
     --noconfirm \
     --clean \
@@ -176,7 +161,12 @@ build_for_arch () {
     --target-arch "$arch" \
     "$ROOT/core/shade_core.py"
 
-  echo "$work/dist/shade-core-$arch"
+  local bin_path="$work/dist/shade-core-$arch"
+  if [[ ! -f "$bin_path" ]]; then
+    echo "error: PyInstaller failed to produce $bin_path" >&2
+    exit 1
+  fi
+  echo "$bin_path"
 }
 
 place_output () {
@@ -198,18 +188,20 @@ if [[ -n "$OTHER_PYTHON" ]]; then
   echo "Building shade-core for both architectures:"
   echo "  $HOST_ARCH  → $HOST_PYTHON"
   echo "  $OTHER_ARCH → $OTHER_PYTHON"
-  HOST_BIN="$(build_for_arch "$HOST_ARCH" "$HOST_PYTHON" | tail -1)"
-  OTHER_BIN="$(build_for_arch "$OTHER_ARCH" "$OTHER_PYTHON" | tail -1)"
-  place_output "$HOST_ARCH"  "$HOST_BIN"
-  place_output "$OTHER_ARCH" "$OTHER_BIN"
+  
+  echo "--- Building $HOST_ARCH ---"
+  HOST_BIN_PATH=$(build_for_arch "$HOST_ARCH" "$HOST_PYTHON" | tail -1)
+  place_output "$HOST_ARCH" "$HOST_BIN_PATH"
+  
+  echo "--- Building $OTHER_ARCH ---"
+  OTHER_BIN_PATH=$(build_for_arch "$OTHER_ARCH" "$OTHER_PYTHON" | tail -1)
+  place_output "$OTHER_ARCH" "$OTHER_BIN_PATH"
 else
   if [[ "$REQUIRE_UNIVERSAL" == "1" ]]; then
     echo "error: universal shade-core required, but no runnable $OTHER_ARCH python was found." >&2
-    echo "       Provide OTHER_PYTHON=/path/to/$OTHER_ARCH/python3 or build on Apple Silicon with Rosetta." >&2
     exit 1
   fi
   echo "⚠︎  No $OTHER_ARCH python3 found — building single-arch ($HOST_ARCH) only."
-  echo "    Set OTHER_PYTHON=/path/to/$OTHER_ARCH/python3 to build universal."
-  HOST_BIN="$(build_for_arch "$HOST_ARCH" "$HOST_PYTHON" | tail -1)"
-  place_output "$HOST_ARCH" "$HOST_BIN"
+  HOST_BIN_PATH=$(build_for_arch "$HOST_ARCH" "$HOST_PYTHON" | tail -1)
+  place_output "$HOST_ARCH" "$HOST_BIN_PATH"
 fi

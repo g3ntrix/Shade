@@ -9,6 +9,7 @@ final class CoreManager {
     var onStatus: ((AppState.Status) -> Void)?
 
     private var process: Process?
+    private var scanProcess: Process?
     private var pipe: Pipe?
     private var userInitiatedStop = false
     private let store = ConfigStore()
@@ -191,6 +192,100 @@ final class CoreManager {
         pipe?.fileHandleForReading.readabilityHandler = nil
         process = nil
         pipe = nil
+    }
+
+    /// Run the core binary with `--scan` to probe Google IPs.
+    /// Streams each output line back via `onLog`, returns the recommended IP
+    /// (from the "Recommended: Set \"google_ip\": \"x.x.x.x\"" line), or nil
+    /// if none was found / scan failed.
+    func runScan(
+        settings: AppSettings,
+        onLog: @escaping (String) -> Void
+    ) async -> String? {
+        // Cancel any previous scan that's still running.
+        if let p = scanProcess, p.isRunning { p.terminate() }
+        scanProcess = nil
+
+        let hostArch = currentMachineArch()
+        guard let coreURL = resolveCoreBinary(hostArch: hostArch) else {
+            onLog("[Scanner] shade-core binary not found for arch \(hostArch).\n")
+            return nil
+        }
+        stripQuarantine(at: coreURL)
+
+        let configURL: URL
+        do { configURL = try store.writeCoreConfig(settings) } catch {
+            onLog("[Scanner] Could not write config: \(error.localizedDescription)\n")
+            return nil
+        }
+
+        let p = Process()
+        p.executableURL = coreURL
+        p.arguments = ["-c", configURL.path, "--scan"]
+        p.environment = [
+            "HOME": NSHomeDirectory(),
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "PYTHONUNBUFFERED": "1",
+            "DFT_SCRIPT_ID": settings.scriptID,
+            "DFT_AUTH_KEY":  settings.authKey
+        ]
+
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError  = out
+        scanProcess = p
+
+        // Thread-safe accumulator so the readabilityHandler closure (which
+        // runs on a background thread) doesn't trigger Swift 6 concurrency
+        // warnings when we later read fullOutput on the main actor.
+        final class OutputStore: @unchecked Sendable {
+            private let lock = NSLock()
+            private(set) var value = ""
+            func append(_ s: String) { lock.lock(); value += s; lock.unlock() }
+        }
+        let store = OutputStore()
+
+        // Stream each available chunk to the UI in real time.
+        out.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            let text = String(data: data, encoding: .utf8) ?? ""
+            store.append(text)
+            onLog(text)
+        }
+
+        do { try p.run() } catch {
+            onLog("[Scanner] Launch failed: \(error.localizedDescription)\n")
+            scanProcess = nil
+            return nil
+        }
+
+        // Wait for the scan to finish (it runs to completion on its own).
+        await withCheckedContinuation { cont in
+            p.terminationHandler = { _ in cont.resume() }
+        }
+        out.fileHandleForReading.readabilityHandler = nil
+
+        // Drain any remaining bytes.
+        if let data = try? out.fileHandleForReading.readToEnd(), !data.isEmpty {
+            let text = String(data: data, encoding: .utf8) ?? ""
+            store.append(text)
+            onLog(text)
+        }
+
+        scanProcess = nil
+
+        // Parse: Recommended: Set "google_ip": "1.2.3.4"
+        for line in store.value.components(separatedBy: .newlines) {
+            if line.contains("Recommended:"), let q1 = line.lastIndex(of: "\"") {
+                let before = line[line.startIndex ..< q1]
+                if let q0 = before.lastIndex(of: "\"") {
+                    let ip = String(line[line.index(after: q0) ..< q1])
+                    if !ip.isEmpty { return ip }
+                }
+            }
+        }
+        return nil
     }
 
     private func currentMachineArch() -> String {

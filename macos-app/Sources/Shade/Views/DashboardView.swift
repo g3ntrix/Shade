@@ -68,6 +68,9 @@ struct DashboardView: View {
                     ConnectivityTestCard()
                 }
 
+                // ── Google IP Scanner ────────────────────────────────────
+                GoogleIPScannerCard()
+
                 // ── System proxy toggle ──────────────────────────────────
                 SystemProxyCard()
             }
@@ -613,6 +616,189 @@ struct SystemProxyCard: View {
                 Spacer(minLength: 0)
             }
         }
+    }
+}
+
+// MARK: - Google IP Scanner card
+
+struct GoogleIPScannerCard: View {
+    @EnvironmentObject var app: AppState
+    @State private var showLog = false
+
+    private var isScanning: Bool { app.scanState == .scanning }
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+
+                // ── Header row ────────────────────────────────────
+                HStack(spacing: 14) {
+                    Image(systemName: "antenna.radiowaves.left.and.right")
+                        .font(.system(size: 22))
+                        .foregroundStyle(.cyan)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Google IP Scanner")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(headerSubtitle)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+
+                    // Spinner while scanning
+                    if isScanning {
+                        ProgressView().controlSize(.small).padding(.trailing, 4)
+                    }
+
+                    // Main action button
+                    Button {
+                        if isScanning {
+                            app.cancelScan()
+                        } else {
+                            showLog = true
+                            Task { await app.runIPScan() }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: isScanning ? "xmark.circle.fill" : "magnifyingglass")
+                                .font(.system(size: 13))
+                            Text(isScanning ? "Cancel" : "Scan")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(LinearGradient(
+                                    colors: isScanning
+                                        ? [.red.opacity(0.75), .pink.opacity(0.75)]
+                                        : [.cyan.opacity(0.85), .teal.opacity(0.85)],
+                                    startPoint: .topLeading, endPoint: .bottomTrailing))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                // ── Current IP badge ──────────────────────────────
+                HStack(spacing: 6) {
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.cyan.opacity(0.8))
+                    Text("Current: ")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Text(app.settings.googleIP.isEmpty ? "default" : app.settings.googleIP)
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.cyan)
+                    Spacer()
+                    if !app.scanLog.isEmpty {
+                        Button(showLog ? "Hide log" : "Show log") { showLog.toggle() }
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .buttonStyle(.plain)
+                    }
+                }
+
+                // ── Result / Apply row ────────────────────────────
+                if case .done(let ip) = app.scanState {
+                    Divider().opacity(0.15)
+                    HStack(spacing: 10) {
+                        if let ip {
+                            Image(systemName: "checkmark.seal.fill")
+                                .foregroundStyle(.green)
+                                .font(.system(size: 14))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Best IP found")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text(ip)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(.cyan)
+                            }
+                            Spacer()
+                            Button("Apply") { app.applyScanResult(ip) }
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 14).padding(.vertical, 7)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .fill(LinearGradient(
+                                            colors: [.green.opacity(0.85), .teal.opacity(0.85)],
+                                            startPoint: .topLeading, endPoint: .bottomTrailing))
+                                )
+                                .buttonStyle(.plain)
+                        } else {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text("No reachable IPs found on this network.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                    }
+                }
+
+                if app.scanState == .failed {
+                    Divider().opacity(0.15)
+                    HStack(spacing: 8) {
+                        Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+                        Text("Scan failed. Check that the core binary is available.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                // ── Live log ──────────────────────────────────────
+                if showLog && !app.scanLog.isEmpty {
+                    Divider().opacity(0.15)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(Array(app.scanLog.enumerated()), id: \.offset) { _, line in
+                                    Text(line)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(logColor(for: line))
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                Color.clear.frame(height: 1).id("bottom")
+                            }
+                            .padding(8)
+                        }
+                        .frame(maxHeight: 160)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(.black.opacity(0.3))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .stroke(.white.opacity(0.07), lineWidth: 1)
+                                )
+                        )
+                        .onChange(of: app.scanLog.count) { _ in
+                            withAnimation { proxy.scrollTo("bottom") }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var headerSubtitle: String {
+        switch app.scanState {
+        case .idle:             return "Find the fastest Google IP for your network"
+        case .scanning:         return "Probing Google IPs…"
+        case .done(let ip):     return ip != nil ? "Scan complete — tap Apply to use the best IP" : "Scan complete"
+        case .failed:           return "Scan failed"
+        }
+    }
+
+    private func logColor(for line: String) -> Color {
+        if line.contains("ms") && !line.contains("—") { return .green }
+        if line.contains("timeout") || line.contains("error") || line.contains("refused") { return .red.opacity(0.8) }
+        if line.contains("Recommended") { return .cyan }
+        if line.contains("Top") || line.contains("Result") { return .yellow.opacity(0.9) }
+        return .secondary
     }
 }
 
