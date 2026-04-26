@@ -1,38 +1,46 @@
 # Shade
 
-Lightweight macOS app for routing traffic through your Google Apps Script relay with a simple desktop interface.
+Lightweight, premium macOS proxy client for routing traffic through **Google Apps Script** relays. Securely bypass censorship with a sleek, native desktop interface.
 
-![Shade App Dashboard](macos-app/sc/app-dashboard.png)
-
+<p align="center">
+  <img src="macos-app/sc/app-dashboard.png" width="400" alt="Shade App Dashboard" />
+  <img src="macos-app/sc/menubar.png" width="250" alt="Shade Menu Bar" />
+</p>
 
 English | [فارسی](README_FA.md)
 
-## What It Does
+## Core Features
 
-- Runs a local HTTP and SOCKS5 proxy.
-- Connects through Google Apps Script relay profiles.
-- Lets you start or stop with one click.
-- Lets you set or clear macOS system proxy with one toggle.
-- Includes a built-in connection test (ping/latency style check).
-- Handles certificate generation and installation prompts so HTTPS works with less manual setup.
+- **Live Speed Meter**: Real-time download/upload speeds and cumulative data usage tracking.
+- **Menu Bar Mini-App**: Control your connection, toggle system proxy, and monitor speeds directly from the macOS menu bar.
+- **Unified Proxy Engine**: Integrated HTTP and SOCKS5 local proxy servers.
+- **Zero-Config HTTPS**: Automatic certificate generation and installation for seamless MITM decryption.
+- **Multiple Profiles**: Quickly switch between different relay nodes (Script IDs).
+- **Google IP Scanner**: Built-in scanner to find working Google IPs for your relay.
+- **Connectivity Testing**: Rapid ping-style latency checks to verify relay health.
+- **Native Experience**: Built with SwiftUI for a premium, resource-efficient macOS experience.
 
-## Main Features
+## How It Works
 
-- Multiple profiles: save and switch between different Script ID + Auth Key configurations.
-- Easy controls: Start, Stop, Test, and Set System Proxy buttons/toggles on the dashboard.
-- Live status: clear running/stopped state and active listener ports.
-- Works with browser/app proxy mode or full system proxy mode.
+Shade tunnels your traffic through a Google Apps Script relay. Because the initial connection is fronted by `www.google.com`, it is highly resistant to Deep Packet Inspection (DPI) and regional blocking.
 
-## Quick Use
+## Getting Started
 
-1. Add one or more profiles (Script ID and Auth Key).
-2. Select a profile.
-3. Click Start.
-4. Optional: enable Set as system proxy.
-5. Run Test to quickly check connectivity.
+1. **Import Credentials**: Paste your Google Apps Script ID and Auth Key.
+2. **Start Proxy**: Click the Start button.
+3. **Configure Browser**: Point your browser to the local SOCKS5 or HTTP port (default: 8081).
+4. **System Mode**: Toggle "Set as system proxy" to route all macOS traffic through the tunnel.
+
+## Technical Details
+
+- **Local Ports**: SOCKS5 (8081), HTTP (8080) by default.
+- **Architecture**: Universal (Apple Silicon & Intel) support.
+- **Security**: TLS 1.3 tunnel to Google Infrastructure.
 
 ## Donations
 
-- TON: UQCriHkMUa6h9oN059tyC23T13OsQhGGM3hUS2S4IYRBZgvx
-- USDT (BEP20): 0x71F41696c60C4693305e67eE3Baa650a4E3dA796
-- TRX (TRON): TFrCzU7bDey9WSh3fhqCBqhaiMzr8VhcUV
+Support the development of Shade:
+
+- **TON**: `UQCriHkMUa6h9oN059tyC23T13OsQhGGM3hUS2S4IYRBZgvx`
+- **USDT (BEP20)**: `0x71F41696c60C4693305e67eE3Baa650a4E3dA796`
+- **TRX (TRON)**: `TFrCzU7bDey9WSh3fhqCBqhaiMzr8VhcUV`
