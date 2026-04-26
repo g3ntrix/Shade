@@ -1357,6 +1357,23 @@ class ProxyServer:
                     url = f"http://{host}{path}"
                 else:
                     url = f"{scheme}://{host}:{port}{path}"
+                    
+               if "spotify" in host or "scdn.co" in host:
+                    # ۱. حذف هدرهای امنیتی که سرور گوگل رو حساس میکنن
+                    for h in ["Spotify-App-Version", "spotify-app-version", "App-Platform", "app-platform"]:
+                        headers.pop(h, None)
+                    
+                    # ۲. خالی کردن بادی نامرئی در درخواست‌های GET
+                    if method == "GET":
+                        body = b""
+                        
+                    # ۳. فیکس اصلی سرچ: اینکود کردن فاصله‌ها (Spaces) و کاراکترهای خاص
+                    if "?" in url:
+                        import urllib.parse
+                        base_url, query_string = url.split("?", 1)
+                        query_string = urllib.parse.quote(urllib.parse.unquote(query_string), safe="=&[]")
+                        url = f"{base_url}?{query_string}"
+                # ---------------------------------
 
                 log.info("MITM → %s %s", method, url)
 
