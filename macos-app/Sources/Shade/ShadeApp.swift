@@ -9,7 +9,7 @@ struct ShadeApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(appState)
-                .frame(minWidth: 960, minHeight: 620)
+                .frame(minWidth: 960, minHeight: 820)
                 .preferredColorScheme(.dark)
                 .onAppear {
                     delegate.setup(appState)

@@ -60,6 +60,11 @@ struct DashboardView: View {
                     }
                 }
 
+                // ── Speed & traffic meter (only while running) ────────────────
+                if app.status.isRunning {
+                    SpeedMeterCard()
+                }
+
                 // ── Profile ──────────────────────────────────────────────
                 CredentialsCard()
 
@@ -619,6 +624,170 @@ struct SystemProxyCard: View {
     }
 }
 
+// MARK: - Speed Meter card
+
+struct SpeedMeterCard: View {
+    @EnvironmentObject var app: AppState
+    @State private var pulse = false
+
+    var body: some View {
+        if app.status.isRunning {
+            Card {
+                VStack(spacing: 12) {
+
+                    // ── Header row ────────────────────────────────────────
+                    HStack(spacing: 10) {
+                        // Animated live indicator dot
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 7, height: 7)
+                            .shadow(color: .green.opacity(0.8), radius: pulse ? 5 : 2)
+                            .scaleEffect(pulse ? 1.2 : 1.0)
+                            .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true),
+                                       value: pulse)
+                            .onAppear { pulse = true }
+
+                        Text("Connection Meter")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        Spacer()
+
+                        // Live total
+                        Text(app.traffic.formattedTotal)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Text("total")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    // ── Speed bars ────────────────────────────────────────
+                    VStack(spacing: 8) {
+                        LiveSpeedBar(
+                            label: "↓  Down",
+                            color: Color(hue: 0.60, saturation: 0.8, brightness: 0.9),
+                            speedLabel: app.traffic.formattedSpeedDown,
+                            bps: app.traffic.speedDown
+                        )
+                        LiveSpeedBar(
+                            label: "↑  Up",
+                            color: Color(hue: 0.78, saturation: 0.75, brightness: 0.95),
+                            speedLabel: app.traffic.formattedSpeedUp,
+                            bps: app.traffic.speedUp
+                        )
+                    }
+
+                    // ── Totals row ────────────────────────────────────────
+                    HStack(spacing: 0) {
+                        TrafficPill(
+                            icon: "arrow.down.circle.fill",
+                            color: Color(hue: 0.60, saturation: 0.8, brightness: 0.9),
+                            label: "Downloaded",
+                            value: app.traffic.formattedDown
+                        )
+                        Rectangle().fill(.white.opacity(0.08)).frame(width: 1, height: 36)
+                        TrafficPill(
+                            icon: "arrow.up.circle.fill",
+                            color: Color(hue: 0.78, saturation: 0.75, brightness: 0.95),
+                            label: "Uploaded",
+                            value: app.traffic.formattedUp
+                        )
+                        Rectangle().fill(.white.opacity(0.08)).frame(width: 1, height: 36)
+                        TrafficPill(
+                            icon: "sum",
+                            color: .cyan,
+                            label: "Session Total",
+                            value: app.traffic.formattedTotal
+                        )
+                    }
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(.white.opacity(0.04))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(.white.opacity(0.08), lineWidth: 1)
+                            )
+                    )
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Live speed bar
+
+private struct LiveSpeedBar: View {
+    let label:      String
+    let color:      Color
+    let speedLabel: String
+    let bps:        Int64
+
+    private let maxBps: Double = 2 * 1024 * 1024
+    private var fill: Double { bps <= 0 ? 0 : min(Double(bps) / maxBps, 1.0) }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(label)
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 50, alignment: .leading)
+
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(.white.opacity(0.06))
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(
+                            LinearGradient(
+                                colors: [color.opacity(0.5), color],
+                                startPoint: .leading, endPoint: .trailing
+                            )
+                        )
+                        .frame(width: max(geo.size.width * fill, fill > 0 ? 8 : 0))
+                        .animation(.spring(response: 0.6, dampingFraction: 0.75), value: fill)
+                }
+            }
+            .frame(height: 8)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+
+            Text(bps > 0 ? speedLabel : "— KB/s")
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundStyle(bps > 0 ? color : .secondary)
+                .frame(width: 72, alignment: .trailing)
+                .contentTransition(.numericText())
+        }
+    }
+}
+
+// MARK: - Traffic pill
+
+private struct TrafficPill: View {
+    let icon:  String
+    let color: Color
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 9))
+                    .foregroundStyle(color)
+                Text(value)
+                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                    .foregroundStyle(color)
+                    .contentTransition(.numericText())
+            }
+            Text(label)
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+    }
+}
+
+
 // MARK: - Google IP Scanner card
 
 struct GoogleIPScannerCard: View {
@@ -872,12 +1041,16 @@ struct PowerButton: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(LinearGradient(
                         colors: isRunning
-                            ? [Color.red.opacity(0.85), Color.pink.opacity(0.85)]
-                            : [Color.accentColor, .purple],
+                            ? [Color(hue: 0.0,  saturation: 0.85, brightness: 0.85),
+                               Color(hue: 0.95, saturation: 0.8,  brightness: 0.80)]
+                            : [Color(hue: 0.72, saturation: 0.85, brightness: 0.95),
+                               Color(hue: 0.79, saturation: 0.90, brightness: 0.90)],
                         startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .shadow(color: (isRunning ? Color.red : Color.accentColor)
-                                .opacity(hover ? 0.5 : 0.25),
-                            radius: hover ? 14 : 8, y: 4)
+                    .shadow(color: (isRunning
+                                ? Color(hue: 0.0, saturation: 0.85, brightness: 0.85)
+                                : Color(hue: 0.72, saturation: 0.85, brightness: 0.95))
+                                .opacity(hover ? 0.55 : 0.28),
+                            radius: hover ? 16 : 8, y: 4)
             )
             .scaleEffect(hover ? 1.03 : 1.0)
             .animation(.easeOut(duration: 0.15), value: hover)

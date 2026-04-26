@@ -63,6 +63,48 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: - Traffic stats
+
+    struct TrafficStats {
+        var totalDown:   Int64 = 0   // bytes
+        var totalUp:     Int64 = 0   // bytes
+        var speedDown:   Int64 = 0   // bytes/s
+        var speedUp:     Int64 = 0   // bytes/s
+        // Rolling buckets for speed calc (per-second bucket, last N seconds)
+        fileprivate var lastDownBucket: Int64 = 0
+        fileprivate var lastUpBucket:   Int64 = 0
+
+        var formattedDown:  String { formatBytes(totalDown) }
+        var formattedUp:    String { formatBytes(totalUp) }
+        var formattedTotal: String { formatBytes(totalDown + totalUp) }
+        var formattedSpeedDown: String { formatSpeed(speedDown) }
+        var formattedSpeedUp:   String { formatSpeed(speedUp) }
+
+        private func formatBytes(_ b: Int64) -> String {
+            let kb = Double(b) / 1024
+            let mb = kb / 1024
+            let gb = mb / 1024
+            if gb >= 1   { return String(format: "%.2f GB", gb) }
+            if mb >= 0.1 { return String(format: "%.1f MB", mb) }
+            if kb >= 0.1 { return String(format: "%.1f KB", kb) }
+            return "\(b) B"
+        }
+
+        private func formatSpeed(_ bps: Int64) -> String {
+            let kbps = Double(bps) / 1024
+            let mbps = kbps / 1024
+            if mbps >= 1   { return String(format: "%.1f MB/s", mbps) }
+            if kbps >= 0.1 { return String(format: "%.0f KB/s", kbps) }
+            return "—"
+        }
+    }
+
+    @Published var traffic = TrafficStats()
+    // Running accumulators for the current second's bucket
+    private var currentSecDownBytes: Int64 = 0
+    private var currentSecUpBytes:   Int64 = 0
+    private var speedTimer: Timer?
+
     @AppStorage("hasShownCertRestartSucceeded") var hasShownCertRestartSucceeded = false
 
     // MARK: - IP Scanner state
@@ -90,6 +132,17 @@ final class AppState: ObservableObject {
         }
         core.onStatus = { [weak self] new in
             Task { @MainActor in self?.status = new }
+        }
+
+        // Speed-meter tick: every second, snapshot bucket → speed, reset.
+        speedTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.traffic.speedDown = self.currentSecDownBytes
+                self.traffic.speedUp   = self.currentSecUpBytes
+                self.currentSecDownBytes = 0
+                self.currentSecUpBytes   = 0
+            }
         }
         
         // Decay timer to turn off "glowing" dots after inactivity
@@ -246,6 +299,9 @@ final class AppState: ObservableObject {
         startedAt = nil
         activeHTTPPort  = 0
         activeSOCKSPort = 0
+        traffic = TrafficStats()
+        currentSecDownBytes = 0
+        currentSecUpBytes   = 0
     }
 
     // MARK: - System proxy toggle
@@ -276,6 +332,47 @@ final class AppState: ObservableObject {
     func append(_ line: LogLine) {
         if logs.count > 5000 { logs.removeFirst(1000) }
         logs.append(line)
+        countTrafficBytes(in: line.text)
+    }
+
+    /// Scan a log chunk for the machine-readable traffic markers
+    /// emitted by proxy_server.py:
+    ///   "[TRAFFIC] rx=<N> tx=<N>"
+    private func countTrafficBytes(in text: String) {
+        // Fast-path: skip lines without the marker
+        guard text.contains("[TRAFFIC]") else { return }
+
+        for line in text.components(separatedBy: .newlines) {
+            guard line.contains("[TRAFFIC]") else { continue }
+
+            // Parse rx=N
+            if let rxRange = line.range(of: "rx="),
+               let spaceOrEnd = line[rxRange.upperBound...].firstIndex(where: { !$0.isNumber }) {
+                if let rx = Int64(line[rxRange.upperBound ..< spaceOrEnd]) {
+                    traffic.totalDown   += rx
+                    currentSecDownBytes += rx
+                }
+            } else if let rxRange = line.range(of: "rx=") {
+                if let rx = Int64(line[rxRange.upperBound...]) {
+                    traffic.totalDown   += rx
+                    currentSecDownBytes += rx
+                }
+            }
+
+            // Parse tx=N
+            if let txRange = line.range(of: "tx="),
+               let spaceOrEnd = line[txRange.upperBound...].firstIndex(where: { !$0.isNumber }) {
+                if let tx = Int64(line[txRange.upperBound ..< spaceOrEnd]) {
+                    traffic.totalUp   += tx
+                    currentSecUpBytes += tx
+                }
+            } else if let txRange = line.range(of: "tx=") {
+                if let tx = Int64(line[txRange.upperBound...]) {
+                    traffic.totalUp   += tx
+                    currentSecUpBytes += tx
+                }
+            }
+        }
     }
 
     func clearLogs() { logs.removeAll() }

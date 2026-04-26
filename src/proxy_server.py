@@ -1425,6 +1425,7 @@ class ProxyServer:
                 writer.write(response)
                 await writer.drain()
                 handled_any = True
+                log.info("[TRAFFIC] rx=%d tx=%d", len(response), len(body))
 
             except asyncio.TimeoutError:
                 break
@@ -1633,3 +1634,4 @@ class ProxyServer:
 
         writer.write(response)
         await writer.drain()
+        log.info("[TRAFFIC] rx=%d tx=%d", len(response), len(body))
