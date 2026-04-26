@@ -23,6 +23,7 @@ if _SRC_DIR not in sys.path:
 from cert_installer import install_ca, is_ca_trusted
 from constants import __version__
 from lan_utils import log_lan_access
+from google_ip_scanner import scan_sync
 from logging_utils import configure as configure_logging, print_banner
 from mitm import CA_CERT_FILE
 from proxy_server import ProxyServer
@@ -80,6 +81,11 @@ def parse_args():
         "--no-cert-check",
         action="store_true",
         help="Skip the certificate installation check on startup.",
+    )
+    parser.add_argument(
+        "--scan",
+        action="store_true",
+        help="Scan Google IPs to find the fastest reachable one and exit.",
     )
     return parser.parse_args()
 
@@ -182,6 +188,14 @@ def main():
         ok = install_ca(CA_CERT_FILE)
         sys.exit(0 if ok else 1)
 
+    # ── Google IP Scanner ──────────────────────────────────────────────────
+    if args.scan:
+        front_domain = config.get("front_domain", "www.google.com")
+        _log = logging.getLogger("Main")
+        _log.info(f"Scanning Google IPs (fronting domain: {front_domain})")
+        ok = scan_sync(front_domain)
+        sys.exit(0 if ok else 1)
+
     log.info("DomainFront Tunnel starting (Apps Script relay)")
 
     log.info("Apps Script relay : SNI=%s → script.google.com",
@@ -211,7 +225,7 @@ def main():
             log.info("MITM CA is already trusted.")
 
     # ── LAN sharing configuration ────────────────────────────────────────
-    lan_sharing = config.get("lan_sharing", True)
+    lan_sharing = config.get("lan_sharing", False)
     if lan_sharing:
         # If LAN sharing is enabled and host is still localhost, change to all interfaces
         if config.get("listen_host", "127.0.0.1") == "127.0.0.1":
@@ -252,7 +266,29 @@ def main():
         log.info("Stopped")
 
 
+def _make_exception_handler(log):
+    """Return an asyncio exception handler that silences Windows WinError 10054
+    noise from connection cleanup (ConnectionResetError in
+    _ProactorBasePipeTransport._call_connection_lost), which is harmless but
+    verbose on Python/Windows when a remote host force-closes a socket."""
+    def handler(loop, context):
+        exc = context.get("exception")
+        cb  = context.get("handle") or context.get("source_traceback", "")
+        if (
+            isinstance(exc, ConnectionResetError)
+            and "_call_connection_lost" in str(cb)
+        ):
+            return  # suppress: benign Windows socket cleanup race
+        log.error("[asyncio]  %s", context.get("message", context))
+        if exc:
+            loop.default_exception_handler(context)
+    return handler
+
+
 async def _run(config):
+    loop = asyncio.get_running_loop()
+    _log = logging.getLogger("asyncio")
+    loop.set_exception_handler(_make_exception_handler(_log))
     server = ProxyServer(config)
     try:
         await server.start()

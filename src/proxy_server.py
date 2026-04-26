@@ -11,8 +11,14 @@ import asyncio
 import ipaddress
 import logging
 import re
+import socket
 import ssl
 import time
+
+try:
+    import certifi
+except Exception:  # optional dependency fallback
+    certifi = None
 
 from constants import (
     CACHE_MAX_MB,
@@ -62,6 +68,23 @@ def _parse_content_length(header_block: bytes) -> int:
             except ValueError:
                 return 0
     return 0
+
+
+def _has_unsupported_transfer_encoding(header_block: bytes) -> bool:
+    """True when the request uses Transfer-Encoding, which we don't stream."""
+    for raw_line in header_block.split(b"\r\n"):
+        name, sep, value = raw_line.partition(b":")
+        if not sep:
+            continue
+        if name.strip().lower() != b"transfer-encoding":
+            continue
+        encodings = [
+            token.strip().lower()
+            for token in value.decode(errors="replace").split(",")
+            if token.strip()
+        ]
+        return any(token != "identity" for token in encodings)
+    return False
 
 
 class ResponseCache:
@@ -146,6 +169,14 @@ class ProxyServer:
     _GOOGLE_DIRECT_ALLOW_EXACT    = GOOGLE_DIRECT_ALLOW_EXACT
     _GOOGLE_DIRECT_ALLOW_SUFFIXES = GOOGLE_DIRECT_ALLOW_SUFFIXES
     _TRACE_HOST_SUFFIXES          = TRACE_HOST_SUFFIXES
+    _DOWNLOAD_DEFAULT_EXTS        = tuple(sorted(LARGE_FILE_EXTS))
+    _DOWNLOAD_ACCEPT_MARKERS      = (
+        "application/octet-stream",
+        "application/zip",
+        "application/x-bittorrent",
+        "video/",
+        "audio/",
+    )
 
     def __init__(self, config: dict):
         self.host = config.get("listen_host", "127.0.0.1")
@@ -154,15 +185,62 @@ class ProxyServer:
         self.socks_host = config.get("socks5_host", self.host)
         self.socks_port = config.get("socks5_port", 1080)
         self.mode = config.get("mode", "apps_script")
+        if self.socks_enabled and self.socks_host == self.host \
+                and int(self.socks_port) == int(self.port):
+            raise ValueError(
+                f"listen_port and socks5_port must differ on the same host "
+                f"(both set to {self.port} on {self.host}). "
+                f"Change one of them in config.json."
+            )
         self.fronter = DomainFronter(config)
         self.mitm = None
         self._cache = ResponseCache(max_mb=CACHE_MAX_MB)
         self._direct_fail_until: dict[str, float] = {}
         self._servers: list[asyncio.base_events.Server] = []
+        self._client_tasks: set[asyncio.Task] = set()
+        self._tcp_connect_timeout = self._cfg_float(
+            config, "tcp_connect_timeout", TCP_CONNECT_TIMEOUT, minimum=1.0,
+        )
+        self._download_min_size = self._cfg_int(
+            config, "chunked_download_min_size", 5 * 1024 * 1024, minimum=0,
+        )
+        self._download_chunk_size = self._cfg_int(
+            config, "chunked_download_chunk_size", 512 * 1024, minimum=64 * 1024,
+        )
+        self._download_max_parallel = self._cfg_int(
+            config, "chunked_download_max_parallel", 8, minimum=1,
+        )
+        self._download_max_chunks = self._cfg_int(
+            config, "chunked_download_max_chunks", 256, minimum=1,
+        )
+        self._download_extensions, self._download_any_extension = (
+            self._normalize_download_extensions(
+                config.get(
+                    "chunked_download_extensions",
+                    list(self._DOWNLOAD_DEFAULT_EXTS),
+                )
+            )
+        )
 
         # hosts override — DNS fake-map: domain/suffix → IP
         # Checked before any real DNS lookup; supports exact and suffix matching.
         self._hosts: dict[str, str] = config.get("hosts", {})
+        configured_direct_exclude = config.get("direct_google_exclude", [])
+        self._direct_google_exclude = {
+            h.lower().rstrip(".")
+            for h in (
+                list(self._GOOGLE_DIRECT_EXACT_EXCLUDE) +
+                list(configured_direct_exclude)
+            )
+        }
+        configured_direct_allow = config.get("direct_google_allow", [])
+        self._direct_google_allow = {
+            h.lower().rstrip(".")
+            for h in (
+                list(self._GOOGLE_DIRECT_ALLOW_EXACT) +
+                list(configured_direct_allow)
+            )
+        }
 
         # ── Per-host policy ────────────────────────────────────────
         # block_hosts  — refuse traffic entirely (close or 403)
@@ -171,6 +249,17 @@ class ProxyServer:
         # e.g. ".local" matches any *.local domain.
         self._block_hosts  = self._load_host_rules(config.get("block_hosts", []))
         self._bypass_hosts = self._load_host_rules(config.get("bypass_hosts", []))
+
+        # Route YouTube through the relay when requested; the Google frontend
+        # IP can enforce SafeSearch on the SNI-rewrite path.
+        if config.get("youtube_via_relay", False):
+            self._SNI_REWRITE_SUFFIXES = tuple(
+                s for s in SNI_REWRITE_SUFFIXES
+                if s not in self._YOUTUBE_SNI_SUFFIXES
+            )
+            log.info("youtube_via_relay enabled — YouTube routed through relay")
+        else:
+            self._SNI_REWRITE_SUFFIXES = SNI_REWRITE_SUFFIXES
 
         try:
             from mitm import MITMCertManager
@@ -181,6 +270,55 @@ class ProxyServer:
             raise SystemExit(1)
 
     # ── Host-policy helpers ───────────────────────────────────────
+
+    @staticmethod
+    def _cfg_int(config: dict, key: str, default: int, *, minimum: int = 1) -> int:
+        try:
+            value = int(config.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, value)
+
+    @staticmethod
+    def _cfg_float(config: dict, key: str, default: float,
+                   *, minimum: float = 0.1) -> float:
+        try:
+            value = float(config.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, value)
+
+    @classmethod
+    def _normalize_download_extensions(cls, raw) -> tuple[tuple[str, ...], bool]:
+        values = raw if isinstance(raw, (list, tuple)) else cls._DOWNLOAD_DEFAULT_EXTS
+        normalized: list[str] = []
+        any_extension = False
+        seen: set[str] = set()
+        for item in values:
+            ext = str(item).strip().lower()
+            if not ext:
+                continue
+            if ext in {"*", ".*"}:
+                any_extension = True
+                continue
+            if not ext.startswith("."):
+                ext = "." + ext
+            if ext not in seen:
+                seen.add(ext)
+                normalized.append(ext)
+        if not normalized and not any_extension:
+            normalized = list(cls._DOWNLOAD_DEFAULT_EXTS)
+        return tuple(normalized), any_extension
+
+    def _track_current_task(self) -> asyncio.Task | None:
+        task = asyncio.current_task()
+        if task is not None:
+            self._client_tasks.add(task)
+        return task
+
+    def _untrack_task(self, task: asyncio.Task | None) -> None:
+        if task is not None:
+            self._client_tasks.discard(task)
 
     @staticmethod
     def _load_host_rules(raw) -> tuple[set[str], tuple[str, ...]]:
@@ -218,17 +356,6 @@ class ProxyServer:
 
     def _is_bypassed(self, host: str) -> bool:
         return self._host_matches_rules(host, self._bypass_hosts)
-
-    def _direct_temporarily_disabled(self, host: str) -> bool:
-        until = self._direct_fail_until.get(host)
-        if until and time.time() < until:
-            return True
-        if until:
-            self._direct_fail_until.pop(host, None)
-        return False
-
-    def _remember_direct_failure(self, host: str, ttl: int = 300) -> None:
-        self._direct_fail_until[host] = time.time() + ttl
 
     @staticmethod
     def _header_value(headers: dict | None, name: str) -> str:
@@ -341,12 +468,24 @@ class ProxyServer:
             "Listening HTTP  on %s:%d — configure your HTTP proxy to this address",
             self.host, self.port,
         )
-        log.info(
-            "Listening SOCKS5 on %s:%d — configure your SOCKS5 proxy to this address",
-            self.host, self.socks_port,
-        )
-        async with http_srv, socks_srv:
-            await asyncio.gather(http_srv.serve_forever(), socks_srv.serve_forever())
+        if socks_srv:
+            log.info(
+                "Listening SOCKS5 on %s:%d — configure your SOCKS5 proxy to this address",
+                self.socks_host, self.socks_port,
+            )
+
+        try:
+            async with http_srv:
+                if socks_srv:
+                    async with socks_srv:
+                        await asyncio.gather(
+                            http_srv.serve_forever(),
+                            socks_srv.serve_forever(),
+                        )
+                else:
+                    await http_srv.serve_forever()
+        except asyncio.CancelledError:
+            raise
 
     async def stop(self):
         """Shut down all listeners and release relay resources."""
@@ -361,6 +500,15 @@ class ProxyServer:
             except Exception:
                 pass
         self._servers = []
+
+        current = asyncio.current_task()
+        client_tasks = [task for task in self._client_tasks if task is not current]
+        for task in client_tasks:
+            task.cancel()
+        if client_tasks:
+            await asyncio.gather(*client_tasks, return_exceptions=True)
+        self._client_tasks.clear()
+
         try:
             await self.fronter.close()
         except Exception as exc:
@@ -370,6 +518,7 @@ class ProxyServer:
 
     async def _on_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         addr = writer.get_extra_info("peername")
+        task = self._track_current_task()
         try:
             first_line = await asyncio.wait_for(reader.readline(), timeout=30)
             if not first_line:
@@ -386,6 +535,16 @@ class ProxyServer:
                 if line in (b"\r\n", b"\n", b""):
                     break
 
+            if _has_unsupported_transfer_encoding(header_block):
+                log.warning("Unsupported Transfer-Encoding on client request")
+                writer.write(
+                    b"HTTP/1.1 501 Not Implemented\r\n"
+                    b"Connection: close\r\n"
+                    b"Content-Length: 0\r\n\r\n"
+                )
+                await writer.drain()
+                return
+
             request_line = first_line.decode(errors="replace").strip()
             parts = request_line.split(" ", 2)
             if len(parts) < 2:
@@ -398,11 +557,14 @@ class ProxyServer:
             else:
                 await self._do_http(header_block, reader, writer)
 
+        except asyncio.CancelledError:
+            pass
         except asyncio.TimeoutError:
             log.debug("Timeout: %s", addr)
         except Exception as e:
             log.error("Error (%s): %s", addr, e)
         finally:
+            self._untrack_task(task)
             try:
                 writer.close()
                 await writer.wait_closed()
@@ -450,12 +612,17 @@ class ProxyServer:
         #   • port 443 → MITM + relay through Apps Script
         #   • port 80  → plain-HTTP relay through Apps Script
         #   • other    → give up (non-HTTP; can't be relayed)
+        # We use a shorter connect timeout for IP literals (4 s) because
+        # when the route is DPI-dropped, waiting longer doesn't help and
+        # clients like Telegram speed up DC-rotation when we fail fast.
         # We remember per-IP failures for a short while so subsequent
         # connects skip the doomed direct attempt.
         if _is_ip_literal(host):
             if not self._direct_temporarily_disabled(host):
                 log.info("Direct tunnel → %s:%d (IP literal)", host, port)
-                ok = await self._do_direct_tunnel(host, port, reader, writer, fragment=True)
+                ok = await self._do_direct_tunnel(
+                    host, port, reader, writer, fragment=True, timeout=4.0,
+                )
                 if ok:
                     return
                 self._remember_direct_failure(host, ttl=30)
@@ -704,6 +871,11 @@ class ProxyServer:
     # Built-in list of domains that must be reached via Google's frontend IP
     # with SNI rewritten to `front_domain` (default: www.google.com).
     # Source: constants.SNI_REWRITE_SUFFIXES.
+    # When youtube_via_relay is enabled the YouTube suffixes are removed so
+    # YouTube goes through the Apps Script relay instead.
+    _YOUTUBE_SNI_SUFFIXES = frozenset({
+        "youtube.com", "youtu.be", "youtube-nocookie.com",
+    })
     _SNI_REWRITE_SUFFIXES = SNI_REWRITE_SUFFIXES
 
     def _sni_rewrite_ip(self, host: str) -> str | None:
@@ -758,13 +930,121 @@ class ProxyServer:
                 return True
         return False
 
+    def _is_direct_google_excluded(self, host: str) -> bool:
+        if host in self._direct_google_exclude:
+            return True
+        for suffix in self._GOOGLE_DIRECT_SUFFIX_EXCLUDE:
+            if host.endswith(suffix):
+                return True
+        for token in self._direct_google_exclude:
+            if token.startswith(".") and host.endswith(token):
+                return True
+        return False
+
+    def _is_direct_google_allowed(self, host: str) -> bool:
+        if host in self._direct_google_allow:
+            return True
+        for suffix in self._GOOGLE_DIRECT_ALLOW_SUFFIXES:
+            if host.endswith(suffix):
+                return True
+        for token in self._direct_google_allow:
+            if token.startswith(".") and host.endswith(token):
+                return True
+        return False
+
+    def _direct_temporarily_disabled(self, host: str) -> bool:
+        h = host.lower().rstrip(".")
+        now = time.time()
+        disabled = False
+        for key in self._direct_failure_keys(h):
+            until = self._direct_fail_until.get(key, 0)
+            if until > now:
+                disabled = True
+            else:
+                self._direct_fail_until.pop(key, None)
+        return disabled
+
+    def _remember_direct_failure(self, host: str, ttl: int = 600):
+        until = time.time() + ttl
+        for key in self._direct_failure_keys(host.lower().rstrip(".")):
+            self._direct_fail_until[key] = until
+
+    def _direct_failure_keys(self, host: str) -> tuple[str, ...]:
+        keys = [host]
+        if host.endswith(".google.com") or host == "google.com":
+            keys.append("*.google.com")
+        if host.endswith(".googleapis.com") or host == "googleapis.com":
+            keys.append("*.googleapis.com")
+        if host.endswith(".gstatic.com") or host == "gstatic.com":
+            keys.append("*.gstatic.com")
+        if host.endswith(".googleusercontent.com") or host == "googleusercontent.com":
+            keys.append("*.googleusercontent.com")
+        return tuple(dict.fromkeys(keys))
+
+    async def _open_tcp_connection(self, target: str, port: int,
+                                   timeout: float = 10.0):
+        """Connect with IPv4-first resolution and clearer failure reporting."""
+        errors: list[str] = []
+        loop = asyncio.get_running_loop()
+
+        # Strip IPv6 brackets (CONNECT may deliver "[::1]" as the hostname).
+        # ipaddress.ip_address() rejects the bracketed form, which would
+        # otherwise force a DNS lookup for an IP literal and fail.
+        lookup_target = target.strip()
+        if lookup_target.startswith("[") and lookup_target.endswith("]"):
+            lookup_target = lookup_target[1:-1]
+
+        try:
+            ipaddress.ip_address(lookup_target)
+            candidates = [(0, lookup_target)]
+        except ValueError:
+            try:
+                infos = await asyncio.wait_for(
+                    loop.getaddrinfo(
+                        lookup_target,
+                        port,
+                        family=socket.AF_UNSPEC,
+                        type=socket.SOCK_STREAM,
+                    ),
+                    timeout=timeout,
+                )
+            except Exception as exc:
+                raise OSError(f"dns lookup failed for {lookup_target}: {exc!r}") from exc
+
+            candidates = []
+            seen = set()
+            for family, _type, _proto, _canon, sockaddr in infos:
+                ip = sockaddr[0]
+                key = (family, ip)
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append((family, ip))
+
+            candidates.sort(key=lambda item: 0 if item[0] == socket.AF_INET else 1)
+
+        for family, ip in candidates:
+            try:
+                return await asyncio.wait_for(
+                    asyncio.open_connection(ip, port, family=family or 0),
+                    timeout=timeout,
+                )
+            except Exception as exc:
+                fam = "ipv4" if family == socket.AF_INET else (
+                    "ipv6" if family == socket.AF_INET6 else "auto"
+                )
+                errors.append(f"{ip} ({fam}): {exc!r}")
+
+        raise OSError("; ".join(errors) or f"connect failed for {target}:{port}")
+
     # ── Direct tunnel (no MITM) ───────────────────────────────────
 
     async def _do_direct_tunnel(self, host: str, port: int,
                                 reader: asyncio.StreamReader,
                                 writer: asyncio.StreamWriter,
                                 connect_ip: str | None = None,
-                                fragment: bool = False) -> bool:
+                                fragment: bool = False,
+                                timeout: float | None = None) -> bool:
         """Pipe raw TLS bytes directly to the target server.
 
         connect_ip overrides DNS: the TCP connection goes to that IP
@@ -772,9 +1052,12 @@ class ProxyServer:
         Defaults to the configured google_ip for Google-category domains.
         """
         target_ip = connect_ip or self.fronter.connect_host
+        effective_timeout = (
+            self._tcp_connect_timeout if timeout is None else float(timeout)
+        )
         try:
-            r_remote, w_remote = await asyncio.wait_for(
-                asyncio.open_connection(target_ip, port), timeout=20
+            r_remote, w_remote = await self._open_tcp_connection(
+                target_ip, port, timeout=effective_timeout,
             )
         except Exception as e:
             log.error("Direct tunnel connect failed (%s via %s): %s",
@@ -836,7 +1119,7 @@ class ProxyServer:
 
         # Step 1: MITM — accept TLS from the browser
         ssl_ctx_server = self.mitm.get_server_context(host)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         transport = writer.transport
         protocol  = transport.get_protocol()
         try:
@@ -853,11 +1136,11 @@ class ProxyServer:
         # Frozen app bundles on macOS can't read the system CA store, so
         # load certifi's bundle when available — otherwise verification
         # fails with "unable to get local issuer certificate".
-        try:
-            import certifi
-            ssl_ctx_client.load_verify_locations(cafile=certifi.where())
-        except Exception:
-            pass
+        if certifi is not None:
+            try:
+                ssl_ctx_client.load_verify_locations(cafile=certifi.where())
+            except Exception:
+                pass
         if not self.fronter.verify_ssl:
             ssl_ctx_client.check_hostname = False
             ssl_ctx_client.verify_mode = ssl.CERT_NONE
@@ -868,7 +1151,7 @@ class ProxyServer:
                     ssl=ssl_ctx_client,
                     server_hostname=sni_out,
                 ),
-                timeout=20,
+                timeout=self._tcp_connect_timeout,
             )
         except Exception as e:
             log.error("SNI-rewrite outbound connect failed (%s via %s): %s",
@@ -910,7 +1193,7 @@ class ProxyServer:
         ssl_ctx = self.mitm.get_server_context(host)
 
         # Upgrade the existing connection to TLS (we are the server)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         transport = writer.transport
         protocol = transport.get_protocol()
 
@@ -923,17 +1206,15 @@ class ProxyServer:
             #   • Telegram Desktop / MTProto over port 443 sends obfuscated
             #     non-TLS bytes — we literally cannot decrypt these, and
             #     since the target IP is blocked we can't direct-tunnel
-            #     either. The only workaround is to configure Telegram as
-            #     an HTTP proxy (not SOCKS5), so it sends hostnames our
-            #     SNI-rewrite path can handle.
+            #     either. Telegram will rotate to another DC on its own;
+            #     failing fast here lets that happen sooner.
             #   • Client CONNECTs but never speaks TLS (some probes).
             if _is_ip_literal(host) and port == 443:
-                log.warning(
-                    "MITM TLS handshake failed for %s:%d (%s). "
-                    "Likely non-TLS traffic (e.g. Telegram MTProto over "
-                    "SOCKS5). Cannot relay raw TCP to a blocked IP — "
-                    "use the HTTP proxy instead so hostnames are preserved.",
-                    host, port, e,
+                log.info(
+                    "Non-TLS traffic on %s:%d (likely Telegram MTProto / "
+                    "obfuscated protocol). This DC appears blocked; the "
+                    "client should rotate to another endpoint shortly.",
+                    host, port,
                 )
             elif port != 443:
                 log.debug(
@@ -971,16 +1252,47 @@ class ProxyServer:
                     return False
 
                 header_block = first_line
+                oversized_headers = False
                 while True:
                     line = await asyncio.wait_for(reader.readline(), timeout=10)
                     header_block += line
                     if len(header_block) > MAX_HEADER_BYTES:
+                        oversized_headers = True
                         break
                     if line in (b"\r\n", b"\n", b""):
                         break
 
+                # Reject truncated / oversized header blocks cleanly rather
+                # than forwarding a half-parsed request to the relay — doing
+                # so would send malformed JSON payloads to Apps Script and
+                # leave the client hanging until its own timeout fires.
+                if oversized_headers:
+                    log.warning(
+                        "MITM header block exceeds %d bytes — closing (%s)",
+                        MAX_HEADER_BYTES, host,
+                    )
+                    try:
+                        writer.write(
+                            b"HTTP/1.1 431 Request Header Fields Too Large\r\n"
+                            b"Connection: close\r\n"
+                            b"Content-Length: 0\r\n\r\n"
+                        )
+                        await writer.drain()
+                    except Exception:
+                        pass
+                    break
+
                 # Read body
                 body = b""
+                if _has_unsupported_transfer_encoding(header_block):
+                    log.warning("Unsupported Transfer-Encoding → %s:%d", host, port)
+                    writer.write(
+                        b"HTTP/1.1 501 Not Implemented\r\n"
+                        b"Connection: close\r\n"
+                        b"Content-Length: 0\r\n\r\n"
+                    )
+                    await writer.drain()
+                    break
                 length = _parse_content_length(header_block)
                 if length > MAX_REQUEST_BODY_BYTES:
                     raise ValueError(f"Request body too large: {length} bytes")
@@ -1006,7 +1318,7 @@ class ProxyServer:
                     if b":" in raw_line:
                         k, v = raw_line.decode(errors="replace").split(":", 1)
                         headers[k.strip()] = v.strip()
-                        
+
                 # X.com/Twitter GraphQL APIs pack massive JSONs into the GET query string.
                 # These routinely exceed Google Apps Script's 2KB URL limit and crash the relay.
                 # Since Twitter's backend is a standard GraphQL server, we can legally convert
@@ -1026,7 +1338,7 @@ class ProxyServer:
                                         body_dict[k] = json.loads(str_val)
                                     except Exception:
                                         body_dict[k] = str_val
-                                
+
                                 body = json.dumps(body_dict).encode("utf-8")
                                 method = "POST"
                                 path = p_parts[0]
@@ -1034,7 +1346,7 @@ class ProxyServer:
                                 headers["content-length"] = str(len(body))
                     except Exception as e:
                         log.debug("Failed to convert X.com GET to POST: %s", e)
-                
+
                 # MITM traffic arrives as origin-form paths; SOCKS/plain HTTP can
                 # also send absolute-form requests. Normalize both to full URLs.
                 if path.startswith("http://") or path.startswith("https://"):
@@ -1048,25 +1360,31 @@ class ProxyServer:
 
                 log.info("MITM → %s %s", method, url)
 
-                # ── CORS: extract relevant request headers ────────────────────
-                origin = next(
-                    (v for k, v in headers.items() if k.lower() == "origin"), ""
+                # ── CORS: extract relevant request headers ─────────────
+                origin = self._header_value(headers, "origin")
+                acr_method = self._header_value(
+                    headers, "access-control-request-method",
                 )
-                acr_method = next(
-                    (v for k, v in headers.items()
-                     if k.lower() == "access-control-request-method"), ""
-                )
-                acr_headers = next(
-                    (v for k, v in headers.items()
-                     if k.lower() == "access-control-request-headers"), ""
+                acr_headers = self._header_value(
+                    headers, "access-control-request-headers",
                 )
 
-                # CORS preflight — respond directly; UrlFetchApp doesn't
-                # support OPTIONS so forwarding it would always fail.
+                # CORS preflight — respond directly. Apps Script's
+                # UrlFetchApp does not support the OPTIONS method, so
+                # forwarding preflights would always fail and break every
+                # cross-origin fetch/XHR the browser runs through us.
                 if method.upper() == "OPTIONS" and acr_method:
-                    log.debug("CORS preflight → %s (responding locally)", url[:60])
-                    writer.write(self._cors_preflight_response(origin, acr_method, acr_headers))
+                    log.debug(
+                        "CORS preflight → %s (responding locally)",
+                        url[:60],
+                    )
+                    writer.write(self._cors_preflight_response(
+                        origin, acr_method, acr_headers,
+                    ))
                     await writer.drain()
+                    continue
+
+                if await self._maybe_stream_download(method, url, headers, body, writer):
                     continue
 
                 # Check local cache first (GET only)
@@ -1097,8 +1415,10 @@ class ProxyServer:
                             self._cache.put(url, response, ttl)
                             log.debug("Cached (%ds): %s", ttl, url[:60])
 
-                # Inject permissive CORS headers whenever the browser
-                # sent an Origin (cross-origin XHR / fetch).
+                # Inject permissive CORS headers whenever the browser sent
+                # an Origin (cross-origin XHR / fetch). Without this, the
+                # browser blocks the response even though the relay fetched
+                # it successfully.
                 if origin and response:
                     response = self._inject_cors_headers(response, origin)
 
@@ -1117,11 +1437,16 @@ class ProxyServer:
                 break
         return handled_any
 
-    # ── CORS helpers ──────────────────────────────────────────────────────────
+    # ── CORS helpers ──────────────────────────────────────────────
 
     @staticmethod
-    def _cors_preflight_response(origin: str, acr_method: str, acr_headers: str) -> bytes:
-        """Return a 204 No Content response that satisfies a CORS preflight."""
+    def _cors_preflight_response(origin: str, acr_method: str,
+                                 acr_headers: str) -> bytes:
+        """Build a 204 response that satisfies a CORS preflight locally.
+
+        Apps Script's UrlFetchApp does not support OPTIONS, so we have to
+        answer preflights here instead of forwarding them.
+        """
         allow_origin = origin or "*"
         allow_methods = (
             f"{acr_method}, GET, POST, PUT, DELETE, PATCH, OPTIONS"
@@ -1143,37 +1468,29 @@ class ProxyServer:
 
     @staticmethod
     def _inject_cors_headers(response: bytes, origin: str) -> bytes:
-        """Inject CORS headers only if the upstream response lacks them.
+        """Strip existing Access-Control-* headers and add permissive ones.
 
-        We must NOT overwrite the origin server's CORS headers: sites like
-        x.com return carefully-scoped Access-Control-Allow-Headers that list
-        specific custom headers (e.g. x-csrf-token). Replacing them with
-        wildcards together with Allow-Credentials: true makes browsers
-        reject the response (per the Fetch spec, "*" is literal when
-        credentials are included), which the site then blames on privacy
-        extensions. So we only fill in what the server omitted.
+        Keeps the body untouched; only rewrites the header block. Using
+        the exact browser-supplied Origin (rather than "*") is required
+        when the request is credentialed (cookies, Authorization).
         """
         sep = b"\r\n\r\n"
         if sep not in response:
             return response
         header_section, body = response.split(sep, 1)
         lines = header_section.decode(errors="replace").split("\r\n")
-
-        existing = {ln.split(":", 1)[0].strip().lower()
-                    for ln in lines if ":" in ln}
-
-        # If the upstream already handled CORS, leave it completely alone.
-        if "access-control-allow-origin" in existing:
-            return response
-
-        # Otherwise inject a minimal, credential-safe set (no wildcards,
-        # since wildcards combined with credentials are invalid).
+        lines = [ln for ln in lines
+                 if not ln.lower().startswith("access-control-")]
         allow_origin = origin or "*"
-        additions = [f"Access-Control-Allow-Origin: {allow_origin}"]
-        if allow_origin != "*":
-            additions.append("Access-Control-Allow-Credentials: true")
-            additions.append("Vary: Origin")
-        return ("\r\n".join(lines + additions) + "\r\n\r\n").encode() + body
+        lines += [
+            f"Access-Control-Allow-Origin: {allow_origin}",
+            "Access-Control-Allow-Credentials: true",
+            "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, PATCH, OPTIONS",
+            "Access-Control-Allow-Headers: *",
+            "Access-Control-Expose-Headers: *",
+            "Vary: Origin",
+        ]
+        return ("\r\n".join(lines) + "\r\n\r\n").encode() + body
 
     async def _relay_smart(self, method, url, headers, body):
         """Choose optimal relay strategy based on request type.
@@ -1196,22 +1513,67 @@ class ProxyServer:
             # Only probe with Range when the URL looks like a big file.
             if self._is_likely_download(url, headers):
                 return await self.fronter.relay_parallel(
-                    method, url, headers, body
+                    method,
+                    url,
+                    headers,
+                    body,
+                    chunk_size=self._download_chunk_size,
+                    max_parallel=self._download_max_parallel,
+                    max_chunks=self._download_max_chunks,
+                    min_size=self._download_min_size,
                 )
         return await self.fronter.relay(method, url, headers, body)
 
     def _is_likely_download(self, url: str, headers: dict) -> bool:
         """Heuristic: is this URL likely a large file download?"""
         path = url.split("?")[0].lower()
-        for ext in LARGE_FILE_EXTS:
+        if self._download_any_extension:
+            return True
+        for ext in self._download_extensions:
             if path.endswith(ext):
                 return True
+        accept = self._header_value(headers, "accept").lower()
+        if any(marker in accept for marker in self._DOWNLOAD_ACCEPT_MARKERS):
+            return True
         return False
+
+    async def _maybe_stream_download(self, method: str, url: str,
+                                     headers: dict | None, body: bytes,
+                                     writer) -> bool:
+        if method.upper() != "GET" or body:
+            return False
+        if headers:
+            for key in headers:
+                if key.lower() == "range":
+                    return False
+        effective_headers = headers or {}
+        if not self._is_likely_download(url, effective_headers):
+            return False
+        if not self.fronter.stream_download_allowed(url):
+            return False
+        return await self.fronter.stream_parallel_download(
+            url,
+            effective_headers,
+            writer,
+            chunk_size=self._download_chunk_size,
+            max_parallel=self._download_max_parallel,
+            max_chunks=self._download_max_chunks,
+            min_size=self._download_min_size,
+        )
 
     # ── Plain HTTP forwarding ─────────────────────────────────────
 
     async def _do_http(self, header_block: bytes, reader, writer):
         body = b""
+        if _has_unsupported_transfer_encoding(header_block):
+            log.warning("Unsupported Transfer-Encoding on plain HTTP request")
+            writer.write(
+                b"HTTP/1.1 501 Not Implemented\r\n"
+                b"Connection: close\r\n"
+                b"Content-Length: 0\r\n\r\n"
+            )
+            await writer.drain()
+            return
         length = _parse_content_length(header_block)
         if length > MAX_REQUEST_BODY_BYTES:
             writer.write(b"HTTP/1.1 413 Content Too Large\r\n\r\n")
@@ -1234,22 +1596,19 @@ class ProxyServer:
                 k, v = raw_line.decode(errors="replace").split(":", 1)
                 headers[k.strip()] = v.strip()
 
-        # ── CORS preflight over plain HTTP ────────────────────────────
-        origin = next(
-            (v for k, v in headers.items() if k.lower() == "origin"), ""
-        )
-        acr_method = next(
-            (v for k, v in headers.items()
-             if k.lower() == "access-control-request-method"), ""
-        )
-        acr_headers_val = next(
-            (v for k, v in headers.items()
-             if k.lower() == "access-control-request-headers"), ""
-        )
+        # ── CORS preflight over plain HTTP ─────────────────────────────
+        origin = self._header_value(headers, "origin")
+        acr_method = self._header_value(headers, "access-control-request-method")
+        acr_headers = self._header_value(headers, "access-control-request-headers")
         if method.upper() == "OPTIONS" and acr_method:
             log.debug("CORS preflight (HTTP) → %s (responding locally)", url[:60])
-            writer.write(self._cors_preflight_response(origin, acr_method, acr_headers_val))
+            writer.write(self._cors_preflight_response(
+                origin, acr_method, acr_headers,
+            ))
             await writer.drain()
+            return
+
+        if await self._maybe_stream_download(method, url, headers, body, writer):
             return
 
         # Cache check for GET
@@ -1267,9 +1626,9 @@ class ProxyServer:
                 if ttl > 0:
                     self._cache.put(url, response, ttl)
 
-        # Inject CORS headers for cross-origin requests
         if origin and response:
             response = self._inject_cors_headers(response, origin)
+
         self._log_response_summary(url, response)
 
         writer.write(response)
