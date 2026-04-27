@@ -144,7 +144,7 @@ struct AppSettings: Codable, Equatable {
             "script_id":      cred?.scriptID ?? "",
             "auth_key":       cred?.authKey  ?? "",
             "script_configs": scriptConfigs,
-            "parallel_relay": enableLoadBalancing ? 2 : 1,
+            "parallel_relay": enableLoadBalancing ? max(1, scriptConfigs.count) : 1,
             "listen_host":    listenHost,
             "listen_port":    listenPort,
             "socks5_host":    listenHost,

@@ -290,7 +290,7 @@ private struct MiniSpeedBar: View {
             .frame(height: 6)
             .clipShape(RoundedRectangle(cornerRadius: 3))
 
-            Text(bps > 0 ? speedText : "—")
+            Text(bps > 0 ? speedText : "0 KB/s")
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .foregroundStyle(bps > 0 ? color : .secondary)
                 .frame(width: 60, alignment: .trailing)

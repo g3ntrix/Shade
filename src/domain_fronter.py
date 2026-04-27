@@ -196,7 +196,7 @@ class DomainFronter:
                     self.connect_host, self.sni_host, self.verify_ssl,
                     sni_hosts=self._sni_hosts,
                 )
-                log.info("HTTP/2 multiplexing available — "
+                log.info("HTTP/2 multiplexing available: "
                          "all requests will share one connection")
         except ImportError:
             pass

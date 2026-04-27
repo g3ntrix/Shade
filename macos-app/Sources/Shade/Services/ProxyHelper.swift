@@ -133,7 +133,7 @@ enum ProxyHelper {
             throw HelperError.installFailed(msg)
         }
         guard isInstalled() else {
-            throw HelperError.installFailed("Sudoers rule did not activate — try again.")
+            throw HelperError.installFailed("Sudoers rule did not activate: try again.")
         }
     }
 

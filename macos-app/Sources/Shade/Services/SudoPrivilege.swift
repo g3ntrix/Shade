@@ -141,7 +141,7 @@ enum SudoPrivilege {
             throw SudoError.installFailed(msg)
         }
         guard isInstalled() else {
-            throw SudoError.installFailed("Sudoers rule did not activate — try again.")
+            throw SudoError.installFailed("Sudoers rule did not activate: try again.")
         }
     }
 

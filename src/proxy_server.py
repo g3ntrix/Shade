@@ -257,7 +257,7 @@ class ProxyServer:
                 s for s in SNI_REWRITE_SUFFIXES
                 if s not in self._YOUTUBE_SNI_SUFFIXES
             )
-            log.info("youtube_via_relay enabled — YouTube routed through relay")
+            log.info("youtube_via_relay enabled: YouTube routed through relay")
         else:
             self._SNI_REWRITE_SUFFIXES = SNI_REWRITE_SUFFIXES
 
@@ -465,12 +465,12 @@ class ProxyServer:
         self._servers = [s for s in (http_srv, socks_srv) if s]
 
         log.info(
-            "Listening HTTP  on %s:%d — configure your HTTP proxy to this address",
+            "Listening HTTP  on %s:%d: configure your HTTP proxy to this address",
             self.host, self.port,
         )
         if socks_srv:
             log.info(
-                "Listening SOCKS5 on %s:%d — configure your SOCKS5 proxy to this address",
+                "Listening SOCKS5 on %s:%d: configure your SOCKS5 proxy to this address",
                 self.socks_host, self.socks_port,
             )
 

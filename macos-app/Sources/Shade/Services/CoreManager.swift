@@ -169,7 +169,7 @@ final class CoreManager {
             throw NSError(
                 domain: "Shade", code: 11,
                 userInfo: [NSLocalizedDescriptionKey:
-                    "Core started but SOCKS5 listener on \(probeHost):\(settings.socksPort) didn't come up in time. Check Logs — another process may be holding that port."]
+                    "Core started but SOCKS5 listener on \(probeHost):\(settings.socksPort) didn't come up in time. Check Logs: another process may be holding that port."]
             )
         }
         self.onLog?(LogLine(timestamp: Date(), stream: .system, text: "[CoreManager] Listener ready.\n"))

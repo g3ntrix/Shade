@@ -95,7 +95,7 @@ final class AppState: ObservableObject {
             let mbps = kbps / 1024
             if mbps >= 1   { return String(format: "%.1f MB/s", mbps) }
             if kbps >= 0.1 { return String(format: "%.0f KB/s", kbps) }
-            return "—"
+            return "0 KB/s"
         }
     }
 
@@ -224,7 +224,7 @@ final class AppState: ObservableObject {
         if ports.http != settings.listenPort || ports.socks != settings.socksPort {
             append(LogLine(
                 timestamp: Date(), stream: .system,
-                text: "⚠︎ Preferred ports busy — using HTTP:\(ports.http) SOCKS5:\(ports.socks)\n"
+                text: "⚠︎ Preferred ports busy: using HTTP:\(ports.http) SOCKS5:\(ports.socks)\n"
             ))
         }
 
@@ -240,11 +240,11 @@ final class AppState: ObservableObject {
             switch certResult {
             case .installedOK:
                 append(LogLine(timestamp: Date(), stream: .system,
-                    text: "✓ Certificate installed — restart your browser to apply.\n"))
+                    text: "✓ Certificate installed: restart your browser to apply.\n"))
                 hasShownCertRestartSucceeded = false
             case .cancelled:
                 append(LogLine(timestamp: Date(), stream: .system,
-                    text: "⚠ Certificate install cancelled — HTTPS pages may show SSL errors.\n"))
+                    text: "⚠ Certificate install cancelled: HTTPS pages may show SSL errors.\n"))
             case .failed(let msg):
                 append(LogLine(timestamp: Date(), stream: .system,
                     text: "⚠ Certificate install failed: \(msg)\n"))
@@ -267,7 +267,7 @@ final class AppState: ObservableObject {
                         text: "✓ System SOCKS5 proxy set to \(host):\(effective.socksPort)\n"))
                 case .cancelled:
                     append(LogLine(timestamp: Date(), stream: .system,
-                        text: "⚠ System proxy permission cancelled — configure manually if needed.\n"))
+                        text: "⚠ System proxy permission cancelled: configure manually if needed.\n"))
                 case .failed(let msg):
                     append(LogLine(timestamp: Date(), stream: .system,
                         text: "⚠ System proxy failed: \(msg)\n"))
@@ -388,7 +388,7 @@ final class AppState: ObservableObject {
         case .installedOK:
             hasShownCertRestartSucceeded = false
             append(LogLine(timestamp: Date(), stream: .system,
-                text: "✓ Certificate refreshed — restart your browser to apply.\n"))
+                text: "✓ Certificate refreshed: restart your browser to apply.\n"))
             return "Certificate refreshed. Restart your browser and retry."
         case .alreadyTrusted:
             hasShownCertRestartSucceeded = true
@@ -417,12 +417,12 @@ final class AppState: ObservableObject {
         var result = await runYouTubeProbe(host: host, socksPort: socksPort)
         if case .failure(let msg) = result, CertManager.looksLikeTLSIssue(msg) {
             append(LogLine(timestamp: Date(), stream: .system,
-                text: "⚠ TLS/certificate error detected — refreshing certificate and retrying test.\n"))
+                text: "⚠ TLS/certificate error detected: refreshing certificate and retrying test.\n"))
             let refresh = await CertManager.reinstallFreshCertificate()
             switch refresh {
             case .installedOK:
                 append(LogLine(timestamp: Date(), stream: .system,
-                    text: "✓ Certificate refreshed — retrying YouTube test.\n"))
+                    text: "✓ Certificate refreshed: retrying YouTube test.\n"))
                 result = await runYouTubeProbe(host: host, socksPort: socksPort)
             case .alreadyTrusted:
                 result = await runYouTubeProbe(host: host, socksPort: socksPort)
@@ -510,7 +510,7 @@ final class AppState: ObservableObject {
         settings.googleIP = ip
         saveSettings()
         append(LogLine(timestamp: Date(), stream: .system,
-            text: "✓ google_ip updated to \(ip) from scanner — restart to apply.\n"))
+            text: "✓ google_ip updated to \(ip) from scanner: restart to apply.\n"))
         scanState = .idle
         scanLog   = []
     }

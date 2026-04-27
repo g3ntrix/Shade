@@ -104,7 +104,7 @@ struct DashboardView: View {
             return "Up \(format(interval: Date().timeIntervalSince(started)))"
         }
         if !canStart { return "Add and select a profile to get started." }
-        return "Ready — SOCKS5/HTTP proxy on \(app.settings.listenHost):\(app.settings.listenPort)."
+        return "Ready: SOCKS5/HTTP proxy on \(app.settings.listenHost):\(app.settings.listenPort)."
     }
 
     private func startTimer() {
@@ -426,6 +426,8 @@ struct CredentialEditSheet: View {
     @State private var name:     String = ""
     @State private var scriptID: String = ""
     @State private var authKey:  String = ""
+    @State private var isAuthKeyVisible: Bool = false
+    @State private var copied: Bool = false
 
     private var isNew: Bool { credential == nil }
 
@@ -468,10 +470,42 @@ struct CredentialEditSheet: View {
 
                 EditField(label: "AUTH KEY",
                           hint: "The same AUTH_KEY you set in Code.gs") {
-                    SecureField("", text: $authKey)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12, design: .monospaced))
-                        .editFieldStyle()
+                    HStack(spacing: 0) {
+                        if isAuthKeyVisible {
+                            TextField("", text: $authKey)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 12, design: .monospaced))
+                        } else {
+                            SecureField("", text: $authKey)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 12, design: .monospaced))
+                        }
+
+                        Button {
+                            isAuthKeyVisible.toggle()
+                        } label: {
+                            Image(systemName: isAuthKeyVisible ? "eye.slash" : "eye")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.trailing, 6)
+
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(authKey, forType: .string)
+                            withAnimation { copied = true }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                                withAnimation { copied = false }
+                            }
+                        } label: {
+                            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                                .font(.system(size: 12))
+                                .foregroundStyle(copied ? .green : .secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .editFieldStyle()
                 }
             }
             .padding(20)
@@ -750,7 +784,7 @@ private struct LiveSpeedBar: View {
             .frame(height: 8)
             .clipShape(RoundedRectangle(cornerRadius: 4))
 
-            Text(bps > 0 ? speedLabel : "— KB/s")
+            Text(bps > 0 ? speedLabel : "0 KB/s")
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .foregroundStyle(bps > 0 ? color : .secondary)
                 .frame(width: 72, alignment: .trailing)
@@ -957,13 +991,13 @@ struct GoogleIPScannerCard: View {
         switch app.scanState {
         case .idle:             return "Find the fastest Google IP for your network"
         case .scanning:         return "Probing Google IPs…"
-        case .done(let ip):     return ip != nil ? "Scan complete — tap Apply to use the best IP" : "Scan complete"
+        case .done(let ip):     return ip != nil ? "Scan complete: tap Apply to use the best IP" : "Scan complete"
         case .failed:           return "Scan failed"
         }
     }
 
     private func logColor(for line: String) -> Color {
-        if line.contains("ms") && !line.contains("—") { return .green }
+        if line.contains("ms") && !line.contains("-") { return .green }
         if line.contains("timeout") || line.contains("error") || line.contains("refused") { return .red.opacity(0.8) }
         if line.contains("Recommended") { return .cyan }
         if line.contains("Top") || line.contains("Result") { return .yellow.opacity(0.9) }

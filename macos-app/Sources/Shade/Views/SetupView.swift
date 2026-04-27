@@ -3,11 +3,13 @@ import AppKit
 
 /// Step-by-step wizard that walks the user through creating a Google Apps
 /// Script web-app deployment and getting the Script ID + Auth Key that Shade
-/// needs. Kept entirely self-contained — the Code.gs source is embedded so
+/// needs. Kept entirely self-contained: the Code.gs source is embedded so
 /// there's nothing to fetch.
 struct SetupView: View {
     @EnvironmentObject var app: AppState
     @State private var step: Int = 0
+    @State private var authKeyDraft: String = ""
+    @State private var authKeyConfirmed: Bool = false
 
     private let steps: [Step] = [
         .init(
@@ -25,7 +27,7 @@ struct SetupView: View {
                 """
                 Select everything in the default Code.gs, delete it, then paste the \
                 code below. Before saving, change the AUTH_KEY constant at the top \
-                to a strong secret of your choice — you'll enter the same value into \
+                to a strong secret of your choice: you'll enter the same value into
                 Shade as your Auth Key. Save with ⌘S.
                 """,
             showCode: true
@@ -41,8 +43,8 @@ struct SetupView: View {
                   • Execute as: Me
                   • Who has access: Anyone
 
-                Click Deploy. Google may ask you to authorize the script the first \
-                time — review the permissions and continue.
+                Google may ask you to authorize the script the first time:
+                review the permissions and continue.
                 """
         ),
         .init(
@@ -126,7 +128,33 @@ struct SetupView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 if s.showCode {
-                    CodeSnippet(code: SetupView.codeGS)
+                    if authKeyConfirmed {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "checkmark.seal.fill")
+                                    .foregroundStyle(.green)
+                                Text("Auth key embedded: copy and paste the code below.")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button("Change") {
+                                    authKeyConfirmed = false
+                                }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color.accentColor)
+                            }
+                            CodeSnippet(code: SetupView.codeGS
+                                .replacingOccurrences(
+                                    of: "CHANGE_ME_TO_A_STRONG_SECRET",
+                                    with: authKeyDraft.replacingOccurrences(of: "\"", with: "\\\"")
+                                ))
+                        }
+                    } else {
+                        AuthKeyPrompt(authKey: $authKeyDraft) {
+                            authKeyConfirmed = true
+                        }
+                    }
                 }
 
                 if let link = s.link {
@@ -150,6 +178,7 @@ struct SetupView: View {
                     Spacer()
 
                     if step < steps.count - 1 {
+                        let isStep2MissingKey = (step == 1 && !authKeyConfirmed)
                         Button {
                             withAnimation { step += 1 }
                         } label: {
@@ -162,6 +191,8 @@ struct SetupView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.accentColor)
+                        .disabled(isStep2MissingKey)
+                        .opacity(isStep2MissingKey ? 0.5 : 1.0)
                     }
                 }
             }
@@ -173,6 +204,123 @@ struct SetupView: View {
         let body:  String
         var link:  URL?    = nil
         var showCode: Bool = false
+    }
+}
+
+// MARK: - Auth key prompt (shown before snippet)
+
+private struct AuthKeyPrompt: View {
+    @Binding var authKey: String
+    var onConfirm: () -> Void
+    @State private var isVisible: Bool = false
+    @State private var copied: Bool = false
+
+    private var trimmed: String {
+        authKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isValid: Bool { trimmed.count >= 8 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Choose an Auth Key")
+                .font(.system(size: 12, weight: .semibold))
+
+            Text("Pick a strong secret (at least 8 characters). It will be baked into the snippet below: the same value goes into Shade's profile as the Auth Key.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                HStack(spacing: 0) {
+                    if isVisible {
+                        TextField("Strong secret", text: $authKey)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12, design: .monospaced))
+                    } else {
+                        SecureField("Strong secret", text: $authKey)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12, design: .monospaced))
+                    }
+
+                    Button {
+                        isVisible.toggle()
+                    } label: {
+                        Image(systemName: isVisible ? "eye.slash" : "eye")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 4)
+
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(authKey, forType: .string)
+                        withAnimation { copied = true }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                            withAnimation { copied = false }
+                        }
+                    } label: {
+                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 12))
+                            .foregroundStyle(copied ? .green : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(.black.opacity(0.25))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(.white.opacity(0.08), lineWidth: 1)
+                        )
+                )
+
+                Button {
+                    authKey = Self.generateRandomKey()
+                } label: {
+                    Label("Generate", systemImage: "wand.and.stars")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Generate a strong random key")
+
+                Button {
+                    onConfirm()
+                } label: {
+                    Text("Use This Key")
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(!isValid)
+            }
+
+            if !authKey.isEmpty && !isValid {
+                Text("Too short: use 8 or more characters.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(.black.opacity(0.25))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(.white.opacity(0.08), lineWidth: 1)
+                )
+        )
+    }
+
+    private static func generateRandomKey(length: Int = 32) -> String {
+        let alphabet = Array("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789")
+        var rng = SystemRandomNumberGenerator()
+        return String((0..<length).map { _ in alphabet[Int(rng.next() % UInt64(alphabet.count))] })
     }
 }
 
@@ -235,24 +383,6 @@ private struct CodeSnippet: View {
 
 extension SetupView {
     static let codeGS: String = #"""
-/**
- * DomainFront Relay — Google Apps Script
- *
- * TWO modes:
- *   1. Single:  POST { k, m, u, h, b, ct, r }       → { s, h, b }
- *   2. Batch:   POST { k, q: [{m,u,h,b,ct,r}, ...] } → { q: [{s,h,b}, ...] }
- *      Uses UrlFetchApp.fetchAll() — all URLs fetched IN PARALLEL.
- *
- * DEPLOYMENT:
- *   1. Go to https://script.google.com → New project
- *   2. Delete the default code, paste THIS entire file
- *   3. Click Deploy → New deployment
- *   4. Type: Web app  |  Execute as: Me  |  Who has access: Anyone
- *   5. Copy the Deployment ID into Shade as the Script ID.
- *
- * CHANGE THE AUTH KEY BELOW TO YOUR OWN SECRET!
- */
-
 const AUTH_KEY = "CHANGE_ME_TO_A_STRONG_SECRET";
 
 const SKIP_HEADERS = {
@@ -264,11 +394,7 @@ function doPost(e) {
   try {
     var req = JSON.parse(e.postData.contents);
     if (req.k !== AUTH_KEY) return _json({ e: "unauthorized" });
-
-    // Batch mode: { k, q: [...] }
     if (Array.isArray(req.q)) return _doBatch(req.q);
-
-    // Single mode
     return _doSingle(req);
   } catch (err) {
     return _json({ e: String(err) });
@@ -291,7 +417,6 @@ function _doSingle(req) {
 function _doBatch(items) {
   var fetchArgs = [];
   var errorMap = {};
-
   for (var i = 0; i < items.length; i++) {
     var item = items[i];
     if (!item.u || typeof item.u !== "string" || !item.u.match(/^https?:\/\//i)) {
@@ -302,12 +427,10 @@ function _doBatch(items) {
     opts.url = item.u;
     fetchArgs.push({ _i: i, _o: opts });
   }
-
   var responses = [];
   if (fetchArgs.length > 0) {
     responses = UrlFetchApp.fetchAll(fetchArgs.map(function(x) { return x._o; }));
   }
-
   var results = [];
   var rIdx = 0;
   for (var i = 0; i < items.length; i++) {
@@ -349,18 +472,11 @@ function _buildOpts(req) {
 }
 
 function doGet(e) {
-  return HtmlService.createHtmlOutput(
-    "<!DOCTYPE html><html><head><title>My App</title></head>" +
-      '<body style="font-family:sans-serif;max-width:600px;margin:40px auto">' +
-      "<h1>Welcome</h1><p>This application is running normally.</p>" +
-      "</body></html>"
-  );
+  return HtmlService.createHtmlOutput("<h1>Welcome</h1><p>Shade relay is running.</p>");
 }
 
 function _json(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(
-    ContentService.MimeType.JSON
-  );
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 """#
 }

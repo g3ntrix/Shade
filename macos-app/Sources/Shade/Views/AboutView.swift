@@ -35,7 +35,7 @@ struct AboutView: View {
                             .foregroundStyle(.secondary)
                         Text("Client developed by g3ntrix")
                             .font(.system(size: 13, weight: .medium))
-                        Link("Telegram — @g3ntrix",
+                        Link("Telegram: @g3ntrix",
                              destination: URL(string: "https://t.me/g3ntrix")!)
                             .font(.system(size: 13, weight: .medium))
                         Link("Upstream project: MasterHttpRelayVPN (masterdnsvpn)",
@@ -60,7 +60,7 @@ struct AboutView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("What's inside")
                             .font(.system(size: 13, weight: .semibold))
-                        BulletRow(icon: "shippingbox", text: "Bundled Python core (shade-core) — no system Python required.")
+                        BulletRow(icon: "shippingbox", text: "Bundled Python core (shade-core): no system Python required.")
                         BulletRow(icon: "lock.shield", text: "Auto MITM CA management under ~/Library/Application Support/Shade/ca.")
                     }
                 }

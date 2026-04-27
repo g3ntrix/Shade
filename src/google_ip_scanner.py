@@ -151,7 +151,7 @@ async def run(front_domain: str) -> bool:
             ok_count += 1
         else:
             status = result.error or "unknown error"
-            print(f"{result.ip:<20} {'—':<12} {status:<25}")
+            print(f"{result.ip:<20} {'-':<12} {status:<25}")
 
     print()
     print(f"Result: {ok_count} / {len(results)} reachable")
