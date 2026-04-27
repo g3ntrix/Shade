@@ -392,10 +392,19 @@ class DomainFronter:
         return False
 
     def _blacklist_sid(self, sid: str, reason: str = "") -> None:
-        """Blacklist a script ID for SCRIPT_BLACKLIST_TTL seconds."""
+        """Blacklist a script ID for SCRIPT_BLACKLIST_TTL seconds.
+
+        Emits a single `[HEALTH] sid=<id> ok=false` marker so the macOS UI
+        flips the corresponding dot to red, regardless of which code path
+        triggered the blacklist (startup probe, fan-out failure, or runtime
+        bad-response detection).
+        """
         if len(self._script_ids) <= 1:
             return  # Nothing to fall back to — blacklist would be pointless.
+        already = sid in self._sid_blacklist
         self._sid_blacklist[sid] = time.time() + self._blacklist_ttl
+        if not already:
+            log.warning("[HEALTH] sid=%s ok=false reason=%s", sid, reason or "unknown")
         log.warning("Blacklisted script %s for %ds%s",
                     sid[-8:] if len(sid) > 8 else sid,
                     int(self._blacklist_ttl),
@@ -858,7 +867,11 @@ class DomainFronter:
         if not self._script_ids or not self._h2_available():
             return
 
-        async def probe(sid: str) -> tuple[str, bool, str]:
+        # Outcomes:
+        #   ("ok",       "")              — definitively healthy
+        #   ("bad",   reason)              — definitively unhealthy → blacklist
+        #   ("skip",  reason)              — inconclusive (transport hiccup) → don't touch
+        async def probe(sid: str) -> tuple[str, str, str]:
             # GET (not HEAD) — Apps Script's UrlFetchApp.fetch() rejects HEAD
             # with "Property has been provided with invalid value: method".
             payload = {
@@ -877,39 +890,49 @@ class DomainFronter:
                     timeout=15,
                 )
             except Exception as exc:
-                return sid, False, f"{type(exc).__name__}"
+                # Transport-level — affects every sid equally, so don't blame
+                # this one. The runtime detector will catch real script issues.
+                return sid, "skip", type(exc).__name__
 
             if status != 200:
-                return sid, False, f"http {status}"
+                # 403/404 from /exec usually means the redirect chain or
+                # /dev-vs-/exec selection is off; not a script-deployment issue
+                # we can act on at probe time.
+                return sid, "skip", f"http {status}"
             text = body.decode(errors="replace").strip()
             if not text:
-                return sid, False, "empty"
+                return sid, "bad", "empty"
             try:
                 data = json.loads(text)
             except json.JSONDecodeError:
-                # Non-JSON 200 means the relay isn't reachable (auth wall, etc).
                 snippet = text[:60].replace("\n", " ")
-                return sid, False, f"non-json:{snippet}"
+                return sid, "bad", f"non-json:{snippet}"
             if not isinstance(data, dict):
-                return sid, False, "not-dict"
-            # Only auth failure is a definitive "script is broken" signal.
-            # Other script-level errors (`e`) usually mean the probe target
-            # URL hiccuped, not that the script itself is unhealthy.
+                return sid, "bad", "not-dict"
             err = data.get("e")
             if isinstance(err, str) and "unauthorized" in err.lower():
-                return sid, False, "unauthorized"
-            return sid, True, ""
+                return sid, "bad", "unauthorized"
+            return sid, "ok", ""
 
-        results = await asyncio.gather(*(probe(s) for s in self._script_ids))
+        # Serialize probes (with mild concurrency) so we don't trip the H2
+        # max-concurrent-streams cap and then blame the scripts for it.
+        sem = asyncio.Semaphore(2)
+        async def probe_limited(sid: str):
+            async with sem:
+                return await probe(sid)
+        results = await asyncio.gather(*(probe_limited(s) for s in self._script_ids))
+
         healthy = 0
-        for sid, ok, reason in results:
-            if ok:
+        for sid, verdict, reason in results:
+            if verdict == "ok":
                 healthy += 1
                 log.info("[HEALTH] sid=%s ok=true", sid)
-            else:
-                log.warning("[HEALTH] sid=%s ok=false reason=%s", sid, reason)
+            elif verdict == "bad":
+                # _blacklist_sid emits the [HEALTH] ok=false marker.
                 self._blacklist_sid(sid, reason=f"health: {reason}")
-        log.info("Health check: %d/%d scripts healthy",
+            else:  # "skip"
+                log.debug("[HEALTH] sid=%s inconclusive (%s)", sid, reason)
+        log.info("Health check: %d/%d scripts confirmed healthy",
                  healthy, len(self._script_ids))
 
     async def _prewarm_script(self):
@@ -1849,8 +1872,12 @@ class DomainFronter:
                     if exc is None:
                         winner_result = t.result()
                         return winner_result
-                    # This racer failed — blacklist and keep waiting for others
-                    self._blacklist_sid(sid, reason=type(exc).__name__)
+                    # Only blacklist on script-level signals. Transport-layer
+                    # errors (TooManyStreamsError, ConnectionError, timeouts)
+                    # affect every sid on this H2 connection equally, so
+                    # blaming them on a specific deployment is wrong.
+                    # Script-level failures (non-JSON, unauthorized) are
+                    # already blacklisted inside _parse_relay_response_with_sid.
                     winner_exc = exc
             # All racers failed
             if winner_exc is not None:
@@ -1883,23 +1910,7 @@ class DomainFronter:
             body=json_body,
         )
 
-        return self._parse_relay_response(body)
-
-    async def _relay_single_h2_with_sid(self, payload: dict, sid: str) -> bytes:
-        """Execute an H2 relay pinned to a specific Apps Script deployment."""
-        full_payload = dict(payload)
-        full_payload["k"] = self._script_keys.get(sid, "")
-        json_body = json.dumps(full_payload).encode()
-
-        path = self._exec_path_for_sid(sid)
-
-        status, headers, body = await self._h2.request(
-            method="POST", path=path, host=self.http_host,
-            headers={"content-type": "application/json"},
-            body=json_body,
-        )
-
-        return self._parse_relay_response(body)
+        return self._parse_relay_response_with_sid(body, sid)
 
     async def _relay_single(self, payload: dict) -> bytes:
         """Execute a single relay POST → redirect → parse."""
@@ -1950,7 +1961,7 @@ class DomainFronter:
                 status, resp_headers, resp_body = await self._read_http_response(reader)
 
             await self._release(reader, writer, created)
-            return self._parse_relay_response(resp_body)
+            return self._parse_relay_response_with_sid(resp_body, sid)
 
         except Exception:
             try:
@@ -2202,6 +2213,41 @@ class DomainFronter:
                     return self._error_response(502, f"Bad JSON: {text[:200]}")
             else:
                 return self._error_response(502, f"No JSON: {text[:200]}")
+
+        return self._parse_relay_json(data)
+
+    def _parse_relay_response_with_sid(self, body: bytes, sid: str) -> bytes:
+        """Like `_parse_relay_response`, but blacklists `sid` on hard failures.
+
+        A hard failure means the deployment itself is misbehaving — empty
+        body, non-JSON output (Google quota / login wall), or auth_key
+        mismatch. Target-URL fetch errors (e.g. `{e: "DNS error..."}`) are
+        NOT hard failures: the script is fine, the destination just hiccupped.
+        """
+        text = body.decode(errors="replace").strip()
+        if not text:
+            self._blacklist_sid(sid, reason="empty body")
+            return self._error_response(502, "Empty response from relay")
+
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            m = re.search(r'\{.*\}', text, re.DOTALL)
+            data = None
+            if m:
+                try:
+                    data = json.loads(m.group())
+                except json.JSONDecodeError:
+                    pass
+            if data is None:
+                snippet = text[:80].replace("\n", " ")
+                self._blacklist_sid(sid, reason=f"non-json: {snippet}")
+                return self._error_response(502, f"Bad JSON: {text[:200]}")
+
+        if isinstance(data, dict):
+            err = data.get("e")
+            if isinstance(err, str) and "unauthorized" in err.lower():
+                self._blacklist_sid(sid, reason="unauthorized")
 
         return self._parse_relay_json(data)
 
