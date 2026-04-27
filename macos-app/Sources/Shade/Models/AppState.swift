@@ -40,6 +40,9 @@ final class AppState: ObservableObject {
     @Published var activeSIDs: Set<String> = []
     private var lastHitAt: [String: Date] = [:]
 
+    /// Scripts that failed the startup health probe. Cleared on every start.
+    @Published var unhealthySIDs: Set<String> = []
+
     /// Ports actually in use (may differ from settings if auto-adjusted).
     @Published var activeHTTPPort:  Int = 0
     @Published var activeSOCKSPort: Int = 0
@@ -156,6 +159,20 @@ final class AppState: ObservableObject {
         let cleanText = text.replacingOccurrences(of: "\\e\\[[0-9;]*[mK]", with: "", options: .regularExpression)
             .replacingOccurrences(of: "\u{1b}\\[[0-9;]*[mK]", with: "", options: .regularExpression)
 
+        // Health probe results: [HEALTH] sid=<id> ok=true|false reason=...
+        if let range = cleanText.range(of: "[HEALTH] sid=") {
+            let tail = cleanText[range.upperBound...]
+            let sid = String(tail.prefix(while: { !$0.isWhitespace }))
+            let ok = tail.contains("ok=true")
+            if !sid.isEmpty {
+                for cred in settings.credentials
+                where cred.scriptID.hasSuffix(sid) || sid.hasSuffix(cred.scriptID) {
+                    if ok { unhealthySIDs.remove(cred.scriptID) }
+                    else  { unhealthySIDs.insert(cred.scriptID) }
+                }
+            }
+        }
+
         // Look for our machine-readable marker: [HIT] SID
         if let range = cleanText.range(of: "[HIT] ") {
             let hitSid = String(cleanText[range.upperBound...].prefix(while: { !$0.isWhitespace && $0 != "]" }))
@@ -230,6 +247,7 @@ final class AppState: ObservableObject {
 
         status = .starting
         startedAt = Date()
+        unhealthySIDs.removeAll()
         do {
             // ── Certificate install (sync) ──────────────────────────────
             // We do this before starting the core so that:

@@ -839,8 +839,78 @@ class DomainFronter:
         await self._h2_connect()
         if self._h2_available():
             self._spawn(self._prewarm_script())
+            self._spawn(self._health_check_all())
             if self._keepalive_task is None or self._keepalive_task.done():
                 self._keepalive_task = self._spawn(self._keepalive_loop())
+
+    async def _health_check_all(self) -> None:
+        """Probe every configured script_id once at startup.
+
+        Emits machine-readable markers consumed by the macOS UI:
+            [HEALTH] sid=<id> ok=true
+            [HEALTH] sid=<id> ok=false reason=<reason>
+
+        Failing script IDs are blacklisted so the load balancer skips them.
+        Skips silently if H2 isn't up — the H1 fallback would serialize and
+        block startup, and runtime failure detection still catches dead
+        scripts on first traffic.
+        """
+        if not self._script_ids or not self._h2_available():
+            return
+
+        async def probe(sid: str) -> tuple[str, bool, str]:
+            # GET (not HEAD) — Apps Script's UrlFetchApp.fetch() rejects HEAD
+            # with "Property has been provided with invalid value: method".
+            payload = {
+                "m": "GET",
+                "u": "http://example.com/",
+                "k": self._script_keys.get(sid, ""),
+            }
+            path = self._exec_path_for_sid(sid)
+            try:
+                status, _, body = await asyncio.wait_for(
+                    self._h2.request(
+                        method="POST", path=path, host=self.http_host,
+                        headers={"content-type": "application/json"},
+                        body=json.dumps(payload).encode(),
+                    ),
+                    timeout=15,
+                )
+            except Exception as exc:
+                return sid, False, f"{type(exc).__name__}"
+
+            if status != 200:
+                return sid, False, f"http {status}"
+            text = body.decode(errors="replace").strip()
+            if not text:
+                return sid, False, "empty"
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                # Non-JSON 200 means the relay isn't reachable (auth wall, etc).
+                snippet = text[:60].replace("\n", " ")
+                return sid, False, f"non-json:{snippet}"
+            if not isinstance(data, dict):
+                return sid, False, "not-dict"
+            # Only auth failure is a definitive "script is broken" signal.
+            # Other script-level errors (`e`) usually mean the probe target
+            # URL hiccuped, not that the script itself is unhealthy.
+            err = data.get("e")
+            if isinstance(err, str) and "unauthorized" in err.lower():
+                return sid, False, "unauthorized"
+            return sid, True, ""
+
+        results = await asyncio.gather(*(probe(s) for s in self._script_ids))
+        healthy = 0
+        for sid, ok, reason in results:
+            if ok:
+                healthy += 1
+                log.info("[HEALTH] sid=%s ok=true", sid)
+            else:
+                log.warning("[HEALTH] sid=%s ok=false reason=%s", sid, reason)
+                self._blacklist_sid(sid, reason=f"health: {reason}")
+        log.info("Health check: %d/%d scripts healthy",
+                 healthy, len(self._script_ids))
 
     async def _prewarm_script(self):
         """Pre-warm Apps Script and detect /dev fast path (no redirect)."""

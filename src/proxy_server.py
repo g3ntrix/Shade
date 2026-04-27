@@ -1357,8 +1357,8 @@ class ProxyServer:
                     url = f"http://{host}{path}"
                 else:
                     url = f"{scheme}://{host}:{port}{path}"
-                    
-               if "spotify" in host or "scdn.co" in host:
+
+                if "spotify" in host or "scdn.co" in host:
                     # ۱. حذف هدرهای امنیتی که سرور گوگل رو حساس میکنن
                     for h in ["Spotify-App-Version", "spotify-app-version", "App-Platform", "app-platform"]:
                         headers.pop(h, None)

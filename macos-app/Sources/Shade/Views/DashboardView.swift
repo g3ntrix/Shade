@@ -1129,8 +1129,9 @@ struct ClusterPulse: View {
     var body: some View {
         HStack(spacing: 8) {
             ForEach(enabledScripts) { cred in
-                PulseDot(sid: cred.scriptID, 
-                         isActive: app.activeSIDs.contains(cred.scriptID))
+                PulseDot(sid: cred.scriptID,
+                         isActive: app.activeSIDs.contains(cred.scriptID),
+                         isUnhealthy: app.unhealthySIDs.contains(cred.scriptID))
             }
             if enabledScripts.isEmpty {
                 Text("Select profiles to balance")
@@ -1144,37 +1145,46 @@ struct ClusterPulse: View {
 struct PulseDot: View {
     let sid: String
     let isActive: Bool
-    
+    let isUnhealthy: Bool
+
     @State private var breathing = false
+
+    private var dotColor: Color {
+        if isActive    { return .purple }
+        if isUnhealthy { return Color.red.opacity(0.55) }
+        return Color.white.opacity(0.15)
+    }
 
     var body: some View {
         ZStack {
-            // Stronger Glow for hits
             if isActive {
                 Circle()
-                    .fill(Color.purple)
+                    .fill(dotColor)
                     .frame(width: 16, height: 16)
                     .blur(radius: 6)
                     .transition(.opacity.combined(with: .scale))
             }
-            
-            // Core
+
             Circle()
-                .fill(isActive ? Color.purple : Color.white.opacity(0.15))
+                .fill(dotColor)
                 .frame(width: 8, height: 8)
                 .overlay(
                     Circle()
                         .stroke(isActive ? Color.white.opacity(0.5) : Color.clear, lineWidth: 1)
                 )
                 .scaleEffect(isActive ? 1.3 : 1.0)
+                .opacity(isUnhealthy && !isActive ? 0.7 : 1.0)
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isActive)
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isUnhealthy)
         .onAppear {
             withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
                 breathing = true
             }
         }
-        .help("Script \(sid.prefix(8))...")
+        .help(isUnhealthy
+              ? "Script \(sid.prefix(8))… — health check failed"
+              : "Script \(sid.prefix(8))…")
     }
 }
 
