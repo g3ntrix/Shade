@@ -3,8 +3,9 @@
 **Shade** is a premium, DPI-resistant macOS proxy client designed to route traffic through **Google Apps Script** relays. It combines a high-performance Python core with a modern, native SwiftUI interface to provide a seamless and secure browsing experience.
 
 <p align="center">
-  <img src="macos-app/sc/app-dashboard.png" width="400" alt="Shade App Dashboard" />
-  <img src="macos-app/sc/menubar.png" width="250" alt="Shade Menu Bar" />
+  <img src="macos-app/sc/app-dashboard.png" width="300" alt="Shade App Dashboard" />
+  <img src="macos-app/sc/setup-guide.png" width="300" alt="Shade Setup Guide" />
+  <img src="macos-app/sc/menubar.png" width="180" alt="Shade Menu Bar" />
 </p>
 
 [English] | [فارسی](README_FA.md)

@@ -3,8 +3,9 @@
 **Shade** یک کلاینت پراکسی پرمیوم و ضد DPI برای macOS است که جهت هدایت ترافیک از طریق رله‌های **Google Apps Script** طراحی شده است. این برنامه با ترکیب هسته قدرتمند پایتون و رابط کاربری مدرن SwiftUI، تجربه‌ای روان و امن را برای عبور از سد فیلترینگ فراهم می‌کند.
 
 <p align="center">
-  <img src="macos-app/sc/app-dashboard.png" width="400" alt="Shade App Dashboard" />
-  <img src="macos-app/sc/menubar.png" width="250" alt="Shade Menu Bar" />
+  <img src="macos-app/sc/app-dashboard.png" width="300" alt="Shade App Dashboard" />
+  <img src="macos-app/sc/setup-guide.png" width="300" alt="Shade Setup Guide" />
+  <img src="macos-app/sc/menubar.png" width="180" alt="Shade Menu Bar" />
 </p>
 
 [English](README.md) | [فارسی]
