@@ -1,11 +1,6 @@
 /**
- * DomainFront Relay — Google Apps Script
- *
- * TWO modes:
- *   1. Single:  POST { k, m, u, h, b, ct, r }       → { s, h, b }
- *   2. Batch:   POST { k, q: [{m,u,h,b,ct,r}, ...] } → { q: [{s,h,b}, ...] }
- *      Uses UrlFetchApp.fetchAll() — all URLs fetched IN PARALLEL.
- *
+ * MasterHttpRelay — Google Apps Script
+ * 
  * DEPLOYMENT:
  *   1. Go to https://script.google.com → New project
  *   2. Delete the default code, paste THIS entire file
@@ -19,17 +14,19 @@
 const AUTH_KEY = "CHANGE_ME_TO_A_STRONG_SECRET";
 
 // Keep browser capability headers (sec-ch-ua*, sec-fetch-*) intact.
-// Headers that reveal the user's real IP are stripped here as a second
-// line of defence (the Python client strips them first).
+// Some modern apps, notably Google Meet, use them for browser gating.
+// Headers that reveal the user's real IP are also stripped here as a
+// second line of defence (the Python client strips them first).
 const SKIP_HEADERS = {
   host: 1, connection: 1, "content-length": 1,
   "transfer-encoding": 1, "proxy-connection": 1, "proxy-authorization": 1,
   "priority": 1, te: 1,
+  // IP-leaking / proxy-metadata headers
   "x-forwarded-for": 1, "x-forwarded-host": 1, "x-forwarded-proto": 1,
   "x-forwarded-port": 1, "x-real-ip": 1, "forwarded": 1, "via": 1,
 };
 
-// Only replay GET/HEAD/OPTIONS if fetchAll fails — unsafe to retry POST/PUT/PATCH/DELETE.
+// If fetchAll fails, only retry methods that are safe to replay.
 const SAFE_REPLAY_METHODS = { GET: 1, HEAD: 1, OPTIONS: 1 };
 
 function doPost(e) {
@@ -103,15 +100,15 @@ function _doBatch(items) {
             responses[j] = null;
             continue;
           }
-          var args = fetchArgs[j];
-          var url = args.url;
-          var fetchOpts = {};
-          for (var key in args) {
-            if (Object.prototype.hasOwnProperty.call(args, key) && key !== "url") {
-              fetchOpts[key] = args[key];
+          var fallbackReq = fetchArgs[j];
+          var fallbackUrl = fallbackReq.url;
+          var fallbackOpts = {};
+          for (var key in fallbackReq) {
+            if (Object.prototype.hasOwnProperty.call(fallbackReq, key) && key !== "url") {
+              fallbackOpts[key] = fallbackReq[key];
             }
           }
-          responses[j] = UrlFetchApp.fetch(url, fetchOpts);
+          responses[j] = UrlFetchApp.fetch(fallbackUrl, fallbackOpts);
         } catch (singleErr) {
           errorMap[fetchIndex[j]] = String(singleErr);
           responses[j] = null;
@@ -147,6 +144,7 @@ function _buildOpts(req) {
     muteHttpExceptions: true,
     followRedirects: req.r !== false,
     validateHttpsCertificates: true,
+    escaping: false,
   };
   if (req.h && typeof req.h === "object") {
     var headers = {};
@@ -166,7 +164,9 @@ function _buildOpts(req) {
 
 function _respHeaders(resp) {
   try {
-    if (typeof resp.getAllHeaders === "function") return resp.getAllHeaders();
+    if (typeof resp.getAllHeaders === "function") {
+      return resp.getAllHeaders();
+    }
   } catch (err) {}
   return resp.getHeaders();
 }
