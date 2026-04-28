@@ -142,22 +142,33 @@ private struct CredentialsCard: View {
             VStack(alignment: .leading, spacing: 12) {
 
                 // ── Header row ───────────────────────────────────────────
-                HStack {
+                HStack(spacing: 8) {
                     Label("Profile", systemImage: "key.fill")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.purple)
+                        .frame(width: 60, alignment: .leading)
 
-                    Spacer()
+                    if app.settings.enableLoadBalancing {
+                        PremiumStrategyPicker()
+                            .transition(.asymmetric(
+                                insertion: .opacity.combined(with: .scale(scale: 0.9)),
+                                removal: .opacity
+                            ))
+                    }
+
+                    Spacer(minLength: 4)
 
                     // Load-balance toggle
                     HStack(spacing: 6) {
-                        Text("Load Balance")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
+                        Text("LB")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(app.settings.enableLoadBalancing ? .purple : .secondary)
                         Toggle("", isOn: Binding(
                             get: { app.settings.enableLoadBalancing },
-                            set: {
-                                app.settings.enableLoadBalancing = $0
+                            set: { newValue in
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                                    app.settings.enableLoadBalancing = newValue
+                                }
                                 app.saveSettings()
                             }
                         ))
@@ -165,6 +176,8 @@ private struct CredentialsCard: View {
                         .controlSize(.mini)
                         .labelsHidden()
                     }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
                     .background(Capsule().fill(.white.opacity(0.05)))
                     .disabled(app.status.isRunning || app.status.isTransitioning)
                     .opacity(app.status.isRunning || app.status.isTransitioning ? 0.6 : 1.0)
@@ -173,18 +186,14 @@ private struct CredentialsCard: View {
                         editTarget = nil
                         showEdit   = true
                     } label: {
-                        Label("Add", systemImage: "plus.circle.fill")
-                            .font(.system(size: 11, weight: .semibold))
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 14))
                             .foregroundStyle(.purple)
                     }
                     .buttonStyle(.plain)
+                    .help("Add new profile")
                 }
-
-                // ── Strategy picker (visible only when LB is on) ─────────
-                if app.settings.enableLoadBalancing {
-                    LBStrategyRow()
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                }
+                .padding(.bottom, 2)
 
                 // ── Fallback banner ──────────────────────────────────────
                 if let msg = app.lbFallbackMessage {
@@ -312,13 +321,25 @@ struct CredentialPickerSheet: View {
 
             ScrollView {
                 VStack(spacing: 8) {
-                    ForEach(app.settings.credentials) { cred in
+                    let strategy = app.settings.lbStrategy
+                    let isLBon = app.settings.enableLoadBalancing
+                    
+                    let filteredCredentials = app.settings.credentials.filter { cred in
+                        if !isLBon { return true }
+                        switch strategy {
+                        case .cfOnly: return cred.usesCloudflare
+                        case .normalOnly: return !cred.usesCloudflare
+                        default: return true
+                        }
+                    }
+
+                    ForEach(filteredCredentials) { cred in
                         CredentialRow(
                             credential: cred,
-                            isActive: app.settings.enableLoadBalancing
+                            isActive: isLBon
                                 ? cred.isEnabledForLB
                                 : cred.id == app.settings.activeCredential?.id,
-                            isLB: app.settings.enableLoadBalancing,
+                            isLB: isLBon,
                             onSelect: {
                                 if app.settings.enableLoadBalancing {
                                     if let idx = app.settings.credentials.firstIndex(where: { $0.id == cred.id }) {
@@ -454,7 +475,6 @@ struct CredentialEditSheet: View {
     @State private var authKey:  String = ""
     @State private var usesCloudflare: Bool = false
     @State private var isAuthKeyVisible: Bool = false
-    @State private var copied: Bool = false
 
     private var isNew: Bool { credential == nil }
 
@@ -514,21 +534,6 @@ struct CredentialEditSheet: View {
                             Image(systemName: isAuthKeyVisible ? "eye.slash" : "eye")
                                 .font(.system(size: 12))
                                 .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.trailing, 6)
-
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(authKey, forType: .string)
-                            withAnimation { copied = true }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                                withAnimation { copied = false }
-                            }
-                        } label: {
-                            Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                                .font(.system(size: 12))
-                                .foregroundStyle(copied ? .green : .secondary)
                         }
                         .buttonStyle(.plain)
                     }
@@ -1153,20 +1158,27 @@ private struct EditField<Content: View>: View {
 struct ClusterPulse: View {
     @EnvironmentObject var app: AppState
 
-    // Mirrors AppSettings.effectiveLBPool so dots match what the core actually uses.
-    private var pool: [Credential] { app.settings.effectiveLBPool }
+    // Show all enabled credentials, but we'll dim those not in the current active pool.
+    private var allEnabled: [Credential] {
+        app.settings.credentials.filter { $0.isEnabledForLB }
+    }
+    
+    private var currentPoolIDs: Set<String> {
+        Set(app.settings.effectiveLBPool.map { $0.scriptID })
+    }
 
     var body: some View {
         HStack(spacing: 8) {
-            ForEach(pool) { cred in
+            ForEach(allEnabled) { cred in
                 PulseDot(
                     sid: cred.scriptID,
                     isActive: app.activeSIDs.contains(cred.scriptID),
                     isUnhealthy: app.unhealthySIDs.contains(cred.scriptID),
+                    isInCurrentPool: currentPoolIDs.contains(cred.scriptID),
                     accent: cred.usesCloudflare ? .orange : .purple
                 )
             }
-            if pool.isEmpty {
+            if allEnabled.isEmpty {
                 Text("Select profiles to balance")
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
@@ -1179,6 +1191,7 @@ struct PulseDot: View {
     let sid: String
     let isActive: Bool
     let isUnhealthy: Bool
+    var isInCurrentPool: Bool = true
     var accent: Color = .purple
 
     @State private var breathing = false
@@ -1186,7 +1199,7 @@ struct PulseDot: View {
     private var dotColor: Color {
         if isActive    { return accent }
         if isUnhealthy { return Color.red.opacity(0.55) }
-        return Color.white.opacity(0.15)
+        return isInCurrentPool ? Color.white.opacity(0.25) : Color.white.opacity(0.08)
     }
 
     var body: some View {
@@ -1207,10 +1220,11 @@ struct PulseDot: View {
                         .stroke(isActive ? Color.white.opacity(0.5) : Color.clear, lineWidth: 1)
                 )
                 .scaleEffect(isActive ? 1.3 : 1.0)
-                .opacity(isUnhealthy && !isActive ? 0.7 : 1.0)
+                .opacity(!isInCurrentPool && !isActive ? 0.4 : (isUnhealthy && !isActive ? 0.7 : 1.0))
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isActive)
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isUnhealthy)
+        .animation(.easeInOut(duration: 0.3), value: isInCurrentPool)
         .onAppear {
             withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
                 breathing = true
@@ -1290,56 +1304,84 @@ struct CloudflareToggle: View {
     }
 }
 
-// MARK: - LB strategy row (shown inside CredentialsCard when LB is on)
+// MARK: - Premium Strategy Picker
 
-private struct LBStrategyRow: View {
+private struct PremiumStrategyPicker: View {
     @EnvironmentObject var app: AppState
+    @State private var showInfo = false
+    @Namespace private var pickerNamespace
 
-    private var strategy: LBStrategy { app.settings.lbStrategy }
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(LBStrategy.allCases) { strategy in
+                StrategyIconToggle(
+                    strategy: strategy,
+                    isSelected: app.settings.lbStrategy == strategy,
+                    namespace: pickerNamespace,
+                    onSelect: {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                            app.settings.lbStrategy = strategy
+                        }
+                        app.saveSettings()
+                    }
+                )
+            }
+
+            Button {
+                showInfo = true
+            } label: {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .padding(.leading, 2)
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $showInfo) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(app.settings.lbStrategy.label)
+                        .font(.system(size: 12, weight: .bold))
+                    Text(app.settings.lbStrategy.detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 200, alignment: .leading)
+                }
+                .padding(12)
+            }
+        }
+        .padding(3)
+        .background(
+            Capsule()
+                .fill(.black.opacity(0.2))
+                .overlay(Capsule().stroke(.white.opacity(0.05), lineWidth: 0.5))
+        )
+    }
+}
+
+private struct StrategyIconToggle: View {
+    let strategy: LBStrategy
+    let isSelected: Bool
+    let namespace: Namespace.ID
+    let onSelect: () -> Void
+
     private var accent: Color { strategy.cfFacing ? .orange : .purple }
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: strategy.icon)
-                .font(.system(size: 11))
-                .foregroundStyle(accent)
-                .frame(width: 14)
-
-            Text("Strategy")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
-
-            Picker("", selection: Binding(
-                get: { app.settings.lbStrategy },
-                set: { app.settings.lbStrategy = $0; app.saveSettings() }
-            )) {
-                ForEach(LBStrategy.allCases) { s in
-                    Label(s.label, systemImage: s.icon).tag(s)
+        Button(action: onSelect) {
+            ZStack {
+                if isSelected {
+                    Circle()
+                        .fill(accent.opacity(0.2))
+                        .matchedGeometryEffect(id: "bg", in: namespace)
                 }
+                Image(systemName: strategy.icon)
+                    .font(.system(size: 10, weight: isSelected ? .bold : .medium))
+                    .foregroundStyle(isSelected ? accent : .secondary.opacity(0.6))
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .controlSize(.small)
-            .disabled(app.status.isRunning || app.status.isTransitioning)
-
-            Image(systemName: "info.circle")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-                .help(strategy.detail)
-
-            Spacer(minLength: 0)
+            .frame(width: 22, height: 22)
+            .contentShape(Circle())
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.white.opacity(0.04))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(accent.opacity(0.2), lineWidth: 1)
-                )
-        )
-        .animation(.easeOut(duration: 0.15), value: strategy)
+        .buttonStyle(.plain)
+        .help(strategy.label)
     }
 }
 
