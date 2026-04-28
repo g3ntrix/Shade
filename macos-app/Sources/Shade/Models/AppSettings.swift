@@ -69,9 +69,9 @@ enum LBStrategy: String, Codable, CaseIterable, Identifiable {
         case .normalPreferred:
             return "Use Apps Script profiles first; fall back to Cloudflare if all Apps Script fail."
         case .cfOnly:
-            return "Cloudflare profiles only — no fallback even if they all fail."
+            return "Cloudflare profiles only."
         case .normalOnly:
-            return "Apps Script profiles only — no fallback even if they all fail."
+            return "Apps Script profiles only."
         }
     }
 

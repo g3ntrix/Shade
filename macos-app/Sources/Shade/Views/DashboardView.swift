@@ -150,6 +150,8 @@ private struct CredentialsCard: View {
 
                     if app.settings.enableLoadBalancing {
                         PremiumStrategyPicker()
+                            .disabled(app.status.isRunning || app.status.isTransitioning)
+                            .opacity(app.status.isRunning || app.status.isTransitioning ? 0.6 : 1.0)
                             .transition(.asymmetric(
                                 insertion: .opacity.combined(with: .scale(scale: 0.9)),
                                 removal: .opacity
@@ -1330,10 +1332,22 @@ private struct PremiumStrategyPicker: View {
             Button {
                 showInfo = true
             } label: {
-                Image(systemName: "info.circle")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .padding(.leading, 2)
+                HStack(spacing: 4) {
+                    Text(app.settings.lbStrategy.label)
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 7, weight: .bold))
+                        .opacity(0.5)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule()
+                        .fill(.white.opacity(0.03))
+                        .overlay(Capsule().stroke(.white.opacity(0.06), lineWidth: 0.5))
+                )
+                .padding(.leading, 4)
             }
             .buttonStyle(.plain)
             .popover(isPresented: $showInfo) {
