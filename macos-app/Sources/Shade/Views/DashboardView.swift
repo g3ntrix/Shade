@@ -141,21 +141,25 @@ private struct CredentialsCard: View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
 
+                // ── Header row ───────────────────────────────────────────
                 HStack {
                     Label("Profile", systemImage: "key.fill")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.purple)
-                    
+
                     Spacer()
-                    
-                    // New LB Toggle directly on Dashboard
+
+                    // Load-balance toggle
                     HStack(spacing: 6) {
                         Text("Load Balance")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.secondary)
                         Toggle("", isOn: Binding(
                             get: { app.settings.enableLoadBalancing },
-                            set: { app.settings.enableLoadBalancing = $0; app.saveSettings() }
+                            set: {
+                                app.settings.enableLoadBalancing = $0
+                                app.saveSettings()
+                            }
                         ))
                         .toggleStyle(.switch)
                         .controlSize(.mini)
@@ -164,7 +168,7 @@ private struct CredentialsCard: View {
                     .background(Capsule().fill(.white.opacity(0.05)))
                     .disabled(app.status.isRunning || app.status.isTransitioning)
                     .opacity(app.status.isRunning || app.status.isTransitioning ? 0.6 : 1.0)
-                    
+
                     Button {
                         editTarget = nil
                         showEdit   = true
@@ -174,6 +178,18 @@ private struct CredentialsCard: View {
                             .foregroundStyle(.purple)
                     }
                     .buttonStyle(.plain)
+                }
+
+                // ── Strategy picker (visible only when LB is on) ─────────
+                if app.settings.enableLoadBalancing {
+                    LBStrategyRow()
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+
+                // ── Fallback banner ──────────────────────────────────────
+                if let msg = app.lbFallbackMessage {
+                    LBFallbackBanner(message: msg)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
                 if app.settings.credentials.isEmpty {
@@ -294,36 +310,21 @@ struct CredentialPickerSheet: View {
 
             Divider().opacity(0.3)
 
-            if app.settings.enableLoadBalancing {
-                LoadBalanceTypeBanner(
-                    activeUsesCloudflare: app.settings.activeCredential?.usesCloudflare ?? false
-                )
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-            }
-
             ScrollView {
                 VStack(spacing: 8) {
-                    let activeUsesCF = app.settings.activeCredential?.usesCloudflare ?? false
                     ForEach(app.settings.credentials) { cred in
-                        let lockedByType = app.settings.enableLoadBalancing
-                            && cred.usesCloudflare != activeUsesCF
                         CredentialRow(
                             credential: cred,
                             isActive: app.settings.enableLoadBalancing
-                                ? (cred.isEnabledForLB && !lockedByType)
+                                ? cred.isEnabledForLB
                                 : cred.id == app.settings.activeCredential?.id,
                             isLB: app.settings.enableLoadBalancing,
-                            isLockedByType: lockedByType,
                             onSelect: {
-                                if lockedByType { return }
                                 if app.settings.enableLoadBalancing {
-                                    // Toggle for LB
                                     if let idx = app.settings.credentials.firstIndex(where: { $0.id == cred.id }) {
                                         app.settings.credentials[idx].isEnabledForLB.toggle()
                                     }
                                 } else {
-                                    // Normal single selection
                                     app.settings.activeCredentialID = cred.id
                                 }
                                 app.saveSettings()
@@ -374,7 +375,6 @@ private struct CredentialRow: View {
     let credential: Credential
     let isActive:   Bool
     var isLB:       Bool = false
-    var isLockedByType: Bool = false
     let onSelect:   () -> Void
     let onEdit:     () -> Void
     let onDelete:   () -> Void
@@ -410,7 +410,6 @@ private struct CredentialRow: View {
                 }
             }
             .buttonStyle(.plain)
-            .disabled(isLockedByType)
 
             Button(action: onEdit) {
                 Image(systemName: "pencil")
@@ -439,10 +438,6 @@ private struct CredentialRow: View {
                                 lineWidth: 1)
                 )
         )
-        .opacity(isLockedByType ? 0.4 : 1.0)
-        .help(isLockedByType
-              ? "Can't load-balance across mixed types. This profile uses a different egress than the active one."
-              : "")
     }
 }
 
@@ -1158,27 +1153,20 @@ private struct EditField<Content: View>: View {
 struct ClusterPulse: View {
     @EnvironmentObject var app: AppState
 
-    // Match makeCoreConfig: only same-type LB-enabled scripts are in the pool.
-    private var enabledScripts: [Credential] {
-        let activeUsesCF = app.settings.activeCredential?.usesCloudflare ?? false
-        return app.settings.credentials.filter {
-            $0.isEnabledForLB && $0.usesCloudflare == activeUsesCF
-        }
-    }
-
-    private var accent: Color {
-        (app.settings.activeCredential?.usesCloudflare ?? false) ? .orange : .purple
-    }
+    // Mirrors AppSettings.effectiveLBPool so dots match what the core actually uses.
+    private var pool: [Credential] { app.settings.effectiveLBPool }
 
     var body: some View {
         HStack(spacing: 8) {
-            ForEach(enabledScripts) { cred in
-                PulseDot(sid: cred.scriptID,
-                         isActive: app.activeSIDs.contains(cred.scriptID),
-                         isUnhealthy: app.unhealthySIDs.contains(cred.scriptID),
-                         accent: accent)
+            ForEach(pool) { cred in
+                PulseDot(
+                    sid: cred.scriptID,
+                    isActive: app.activeSIDs.contains(cred.scriptID),
+                    isUnhealthy: app.unhealthySIDs.contains(cred.scriptID),
+                    accent: cred.usesCloudflare ? .orange : .purple
+                )
             }
-            if enabledScripts.isEmpty {
+            if pool.isEmpty {
                 Text("Select profiles to balance")
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
@@ -1232,6 +1220,13 @@ struct PulseDot: View {
               ? "Script \(sid.prefix(8))… — health check failed"
               : "Script \(sid.prefix(8))…")
     }
+}
+
+// MARK: - LBStrategy view helpers
+
+extension LBStrategy {
+    /// Whether this strategy predominantly routes through Cloudflare (drives accent color).
+    var cfFacing: Bool { self == .cfPreferred || self == .cfOnly }
 }
 
 // MARK: - Cloudflare badge / toggle / LB banner
@@ -1295,38 +1290,88 @@ struct CloudflareToggle: View {
     }
 }
 
-struct LoadBalanceTypeBanner: View {
-    let activeUsesCloudflare: Bool
+// MARK: - LB strategy row (shown inside CredentialsCard when LB is on)
 
-    private var typeAccent: Color { activeUsesCloudflare ? .orange : .purple }
-    private var typeLabel: String { activeUsesCloudflare ? "Cloudflare" : "regular" }
+private struct LBStrategyRow: View {
+    @EnvironmentObject var app: AppState
+
+    private var strategy: LBStrategy { app.settings.lbStrategy }
+    private var accent: Color { strategy.cfFacing ? .orange : .purple }
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "info.circle.fill")
+            Image(systemName: strategy.icon)
                 .font(.system(size: 11))
-                .foregroundStyle(typeAccent)
-            (
-                Text("Load balancing only mixes ")
+                .foregroundStyle(accent)
+                .frame(width: 14)
+
+            Text("Strategy")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            Picker("", selection: Binding(
+                get: { app.settings.lbStrategy },
+                set: { app.settings.lbStrategy = $0; app.saveSettings() }
+            )) {
+                ForEach(LBStrategy.allCases) { s in
+                    Label(s.label, systemImage: s.icon).tag(s)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .controlSize(.small)
+            .disabled(app.status.isRunning || app.status.isTransitioning)
+
+            Image(systemName: "info.circle")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .help(strategy.detail)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.white.opacity(0.04))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(accent.opacity(0.2), lineWidth: 1)
+                )
+        )
+        .animation(.easeOut(duration: 0.15), value: strategy)
+    }
+}
+
+// MARK: - LB fallback banner
+
+struct LBFallbackBanner: View {
+    let message: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90.circle.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(.yellow)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Fallback active")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.yellow)
+                Text(message)
                     .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                + Text(typeLabel)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(typeAccent)
-                + Text(" profiles (matching the active one).")
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-            )
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.white.opacity(0.04))
+                .fill(.yellow.opacity(0.08))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(.white.opacity(0.06), lineWidth: 1)
+                        .stroke(.yellow.opacity(0.25), lineWidth: 1)
                 )
         )
     }

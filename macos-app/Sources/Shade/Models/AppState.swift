@@ -43,6 +43,12 @@ final class AppState: ObservableObject {
     /// Scripts that failed the startup health probe. Cleared on every start.
     @Published var unhealthySIDs: Set<String> = []
 
+    /// Populated by the health monitor when a "preferred" strategy triggers
+    /// an automatic restart on the fallback pool.
+    @Published var lbFallbackMessage: String? = nil
+
+    private var healthMonitorTask: Task<Void, Never>? = nil
+
     /// Ports actually in use (may differ from settings if auto-adjusted).
     @Published var activeHTTPPort:  Int = 0
     @Published var activeSOCKSPort: Int = 0
@@ -298,6 +304,8 @@ final class AppState: ObservableObject {
                     hasShownCertRestartSucceeded = true
                 }
             }
+
+            startHealthMonitor()
         } catch {
             status = .error(error.localizedDescription)
             startedAt = nil
@@ -305,7 +313,71 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: - LB health monitor
+
+    private func startHealthMonitor() {
+        healthMonitorTask?.cancel()
+        healthMonitorTask = nil
+        guard settings.enableLoadBalancing, settings.lbStrategy.hasFallback else { return }
+
+        healthMonitorTask = Task { @MainActor [weak self] in
+            // Give the core time to run its startup health probes before we
+            // start evaluating — 15 s is enough even on slow connections.
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            while !Task.isCancelled {
+                guard let self, self.status.isRunning,
+                      !self.settings.lbFallbackActive else { return }
+                self.evaluateFallback()
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+            }
+        }
+    }
+
+    private func evaluateFallback() {
+        let enabled    = settings.credentials.filter { $0.isEnabledForLB }
+        let cfPool     = enabled.filter { $0.usesCloudflare }
+        let normalPool = enabled.filter { !$0.usesCloudflare }
+
+        let shouldFallback: Bool
+        let message: String
+
+        switch settings.lbStrategy {
+        case .cfPreferred:
+            let allCFDead = !cfPool.isEmpty
+                && cfPool.allSatisfy { unhealthySIDs.contains($0.scriptID) }
+            shouldFallback = allCFDead && !normalPool.isEmpty
+            message = "All Cloudflare profiles failed. Falling back to Apps Script profiles. Restart to try Cloudflare again."
+        case .normalPreferred:
+            let allNormalDead = !normalPool.isEmpty
+                && normalPool.allSatisfy { unhealthySIDs.contains($0.scriptID) }
+            shouldFallback = allNormalDead && !cfPool.isEmpty
+            message = "All Apps Script profiles failed. Falling back to Cloudflare profiles. Restart to try Apps Script again."
+        default:
+            return
+        }
+
+        guard shouldFallback else { return }
+
+        settings.lbFallbackActive = true
+        lbFallbackMessage = message
+        append(LogLine(timestamp: Date(), stream: .system,
+            text: "⚠ \(message)\n"))
+        append(LogLine(timestamp: Date(), stream: .system,
+            text: "↻ Restarting core on fallback pool…\n"))
+
+        // Stop then re-start — start() will read lbFallbackActive = true and
+        // build the config with the full pool.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.stop()
+            await self.start()
+        }
+    }
+
     func stop() async {
+        healthMonitorTask?.cancel()
+        healthMonitorTask = nil
+
         status = .stopping
 
         // Clear system proxy before stopping the core
@@ -320,6 +392,10 @@ final class AppState: ObservableObject {
         traffic = TrafficStats()
         currentSecDownBytes = 0
         currentSecUpBytes   = 0
+
+        // Reset fallback state so the next start() uses the primary pool again.
+        settings.lbFallbackActive = false
+        lbFallbackMessage = nil
     }
 
     // MARK: - System proxy toggle
