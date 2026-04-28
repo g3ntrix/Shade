@@ -8,14 +8,31 @@ struct Credential: Codable, Equatable, Identifiable {
     var scriptID: String
     var authKey: String
     var isEnabledForLB: Bool = true
+    var usesCloudflare: Bool = false
 
     init(id: UUID = UUID(), name: String = "Default",
-         scriptID: String = "", authKey: String = "", isEnabledForLB: Bool = true) {
+         scriptID: String = "", authKey: String = "",
+         isEnabledForLB: Bool = true, usesCloudflare: Bool = false) {
         self.id = id
         self.name = name
         self.scriptID = scriptID
         self.authKey = authKey
         self.isEnabledForLB = isEnabledForLB
+        self.usesCloudflare = usesCloudflare
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, scriptID, authKey, isEnabledForLB, usesCloudflare
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id             = try c.decode(UUID.self,   forKey: .id)
+        name           = try c.decode(String.self, forKey: .name)
+        scriptID       = try c.decode(String.self, forKey: .scriptID)
+        authKey        = try c.decode(String.self, forKey: .authKey)
+        isEnabledForLB = (try? c.decode(Bool.self, forKey: .isEnabledForLB)) ?? true
+        usesCloudflare = (try? c.decode(Bool.self, forKey: .usesCloudflare)) ?? false
     }
 }
 
@@ -125,10 +142,16 @@ struct AppSettings: Codable, Equatable {
     func makeCoreConfig() -> [String: Any] {
         let cred = activeCredential
         
-        // Determine which scripts to pass to the core
+        // Determine which scripts to pass to the core.
+        // In LB mode we only mix profiles whose backing transport matches the
+        // active credential — Cloudflare-routed scripts have a different egress
+        // IP from plain Apps-Script ones, so they can't share a pool.
         let scriptsToUse: [Credential]
         if enableLoadBalancing {
-            scriptsToUse = credentials.filter { $0.isEnabledForLB }
+            let activeUsesCF = cred?.usesCloudflare ?? false
+            scriptsToUse = credentials.filter {
+                $0.isEnabledForLB && $0.usesCloudflare == activeUsesCF
+            }
         } else {
             scriptsToUse = cred != nil ? [cred!] : []
         }

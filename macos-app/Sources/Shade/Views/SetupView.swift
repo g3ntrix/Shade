@@ -1,17 +1,166 @@
 import SwiftUI
 import AppKit
 
-/// Step-by-step wizard that walks the user through creating a Google Apps
-/// Script web-app deployment and getting the Script ID + Auth Key that Shade
-/// needs. Kept entirely self-contained: the Code.gs source is embedded so
-/// there's nothing to fetch.
+/// Top-level setup wizard. Lets the user pick between the Apps-Script-only
+/// flow (Code.gs hits target URLs directly) and the Cloudflare-Worker flow
+/// (Code.gs forwards to a Cloudflare Worker which fetches the target).
 struct SetupView: View {
-    @EnvironmentObject var app: AppState
+    enum Mode { case chooser, appsScript, cloudflare }
+    @State private var mode: Mode = .chooser
+
+    var body: some View {
+        switch mode {
+        case .chooser:
+            SetupChooserView(onPick: { picked in
+                withAnimation(.easeOut(duration: 0.2)) { mode = picked }
+            })
+        case .appsScript:
+            AppsScriptSetupView(onBack: {
+                withAnimation(.easeOut(duration: 0.2)) { mode = .chooser }
+            })
+        case .cloudflare:
+            CloudflareSetupView(onBack: {
+                withAnimation(.easeOut(duration: 0.2)) { mode = .chooser }
+            })
+        }
+    }
+}
+
+// MARK: - Chooser
+
+private struct SetupChooserView: View {
+    let onPick: (SetupView.Mode) -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Setup Guide")
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                    Text("Pick how you want Shade to relay your traffic. You can run multiple profiles of either type.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 14) {
+                    ChooserCard(
+                        title: "Apps Script only",
+                        subtitle: "Simplest setup — 5 steps",
+                        details: "Your relay runs entirely on Google Apps Script. Traffic exits through Google's IPs.",
+                        icon: "doc.text.fill",
+                        accent: .accentColor
+                    ) {
+                        onPick(.appsScript)
+                    }
+
+                    ChooserCard(
+                        title: "Cloudflare Worker",
+                        subtitle: "Apps Script + Worker — 7 steps",
+                        details: "Apps Script forwards to a Cloudflare Worker that fetches the target. Your traffic exits through Cloudflare's IPs.",
+                        icon: "cloud.fill",
+                        accent: .orange,
+                        recommended: true
+                    ) {
+                        onPick(.cloudflare)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ChooserCard: View {
+    let title: String
+    let subtitle: String
+    let details: String
+    let icon: String
+    let accent: Color
+    var recommended: Bool = false
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    ZStack {
+                        Circle().fill(accent.opacity(0.18))
+                            .frame(width: 36, height: 36)
+                        Image(systemName: icon)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(accent)
+                    }
+                    Spacer()
+                    if recommended {
+                        Text("RECOMMENDED")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(accent)
+                            .padding(.horizontal, 6).padding(.vertical, 3)
+                            .background(
+                                Capsule().fill(accent.opacity(0.15))
+                                    .overlay(Capsule().stroke(accent.opacity(0.35), lineWidth: 0.5))
+                            )
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(accent)
+                }
+
+                Text(details)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Spacer(minLength: 4)
+
+                HStack(spacing: 6) {
+                    Text("Start guide")
+                        .font(.system(size: 12, weight: .semibold))
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .foregroundStyle(accent)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(.white.opacity(hover ? 0.07 : 0.04))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(hover ? accent.opacity(0.45) : .white.opacity(0.08),
+                                    lineWidth: 1)
+                    )
+                    .shadow(color: accent.opacity(hover ? 0.25 : 0),
+                            radius: hover ? 12 : 0, y: 4)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .animation(.easeOut(duration: 0.15), value: hover)
+    }
+}
+
+// MARK: - Apps-Script-only branch (existing flow)
+
+private struct AppsScriptSetupView: View {
+    let onBack: () -> Void
     @State private var step: Int = 0
     @State private var authKeyDraft: String = ""
     @State private var authKeyConfirmed: Bool = false
 
-    private let steps: [Step] = [
+    private let accent: Color = .accentColor
+
+    private let steps: [WizardStep] = [
         .init(
             title: "Create a new Apps Script project",
             body:
@@ -30,7 +179,7 @@ struct SetupView: View {
                 to a strong secret of your choice: you'll enter the same value into
                 Shade as your Auth Key. Save with ⌘S.
                 """,
-            showCode: true
+            showAuthKey: true
         ),
         .init(
             title: "Deploy as a Web app",
@@ -72,86 +221,49 @@ struct SetupView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Setup Guide")
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                    Text("Get your Google Apps Script deployment running in five short steps.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                }
-
-                stepper
+                WizardHeader(
+                    title: "Apps Script Setup",
+                    subtitle: "Get your Google Apps Script deployment running in five short steps.",
+                    onBack: onBack
+                )
+                StepperBar(count: steps.count, current: step, accent: accent)
                 stepCard
             }
         }
     }
 
-    // MARK: - Stepper
-
-    private var stepper: some View {
-        HStack(spacing: 6) {
-            ForEach(steps.indices, id: \.self) { i in
-                Capsule()
-                    .fill(i <= step ? Color.accentColor : .white.opacity(0.12))
-                    .frame(height: 4)
-                    .animation(.easeInOut(duration: 0.2), value: step)
-            }
-        }
-    }
-
-    // MARK: - Step card
-
     private var stepCard: some View {
         let s = steps[step]
         return Card {
             VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 10) {
-                    ZStack {
-                        Circle().fill(Color.accentColor.opacity(0.18))
-                            .frame(width: 26, height: 26)
-                        Text("\(step + 1)")
-                            .font(.system(size: 12, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color.accentColor)
-                    }
-                    Text(s.title)
-                        .font(.system(size: 15, weight: .semibold))
-                    Spacer()
-                    Text("Step \(step + 1) of \(steps.count)")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
+                StepCardHeader(index: step, total: steps.count, title: s.title, accent: accent)
 
                 Text(s.body)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                if s.showCode {
+                if s.showAuthKey {
                     if authKeyConfirmed {
                         VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 8) {
-                                Image(systemName: "checkmark.seal.fill")
-                                    .foregroundStyle(.green)
-                                Text("Auth key embedded: copy and paste the code below.")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                Button("Change") {
-                                    authKeyConfirmed = false
-                                }
-                                .buttonStyle(.plain)
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(Color.accentColor)
-                            }
-                            CodeSnippet(code: SetupView.codeGS
-                                .replacingOccurrences(
-                                    of: "CHANGE_ME_TO_A_STRONG_SECRET",
-                                    with: authKeyDraft.replacingOccurrences(of: "\"", with: "\\\"")
-                                ))
+                            ConfirmedHint(
+                                text: "Auth key embedded: copy and paste the code below.",
+                                accent: accent,
+                                onChange: { authKeyConfirmed = false }
+                            )
+                            CodeSnippet(
+                                filename: "Code.gs",
+                                code: codeGS_AppsScriptOnly
+                                    .replacingOccurrences(
+                                        of: "CHANGE_ME_TO_A_STRONG_SECRET",
+                                        with: authKeyDraft
+                                            .replacingOccurrences(of: "\"", with: "\\\"")
+                                    ),
+                                accent: accent
+                            )
                         }
                     } else {
-                        AuthKeyPrompt(authKey: $authKeyDraft) {
+                        AuthKeyPrompt(authKey: $authKeyDraft, accent: accent) {
                             authKeyConfirmed = true
                         }
                     }
@@ -164,53 +276,428 @@ struct SetupView: View {
                     }
                 }
 
-                HStack {
-                    Button {
-                        if step > 0 { withAnimation { step -= 1 } }
-                    } label: {
-                        Label("Back", systemImage: "chevron.left")
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(step > 0 ? AnyShapeStyle(.primary) : AnyShapeStyle(Color.secondary.opacity(0.4)))
-                    .disabled(step == 0)
+                StepNavBar(
+                    step: $step,
+                    total: steps.count,
+                    accent: accent,
+                    nextDisabled: step == 1 && !authKeyConfirmed
+                )
+            }
+        }
+    }
+}
 
-                    Spacer()
+// MARK: - Cloudflare branch
 
-                    if step < steps.count - 1 {
-                        let isStep2MissingKey = (step == 1 && !authKeyConfirmed)
-                        Button {
-                            withAnimation { step += 1 }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Text("Next")
-                                Image(systemName: "chevron.right")
-                            }
-                            .font(.system(size: 12, weight: .semibold))
-                            .padding(.horizontal, 14).padding(.vertical, 7)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.accentColor)
-                        .disabled(isStep2MissingKey)
-                        .opacity(isStep2MissingKey ? 0.5 : 1.0)
-                    }
-                }
+private struct CloudflareSetupView: View {
+    let onBack: () -> Void
+
+    @State private var step: Int = 0
+    @State private var workerURLDraft: String = ""
+    @State private var workerURLConfirmed: Bool = false
+    @State private var authKeyDraft: String = ""
+    @State private var authKeyConfirmed: Bool = false
+
+    private let accent: Color = .orange
+
+    private let steps: [WizardStep] = [
+        .init(
+            title: "Open Cloudflare and create a Worker",
+            body:
+                """
+                Sign in to the Cloudflare dashboard. From the sidebar, open \
+                Compute → Workers & Pages, click Create application, choose \
+                Hello World, and click Deploy.
+                """,
+            link: URL(string: "https://dash.cloudflare.com/")
+        ),
+        .init(
+            title: "Open the Worker editor",
+            body:
+                """
+                On the Worker overview page click Edit code. Select everything \
+                in the editor and delete it — you'll paste a fresh script next.
+                """
+        ),
+        .init(
+            title: "Paste the worker.js script",
+            body:
+                """
+                Enter the Worker URL Cloudflare gave you (e.g. \
+                myworker.workers.dev). We'll bake it into the script so the \
+                Worker can detect self-fetch loops. Then copy the result, paste \
+                it into the Cloudflare editor, and click Deploy.
+                """,
+            showWorkerURL: true,
+            codeKind: .workerJS
+        ),
+        .init(
+            title: "Open Apps Script",
+            body:
+                """
+                Open script.google.com and click New project (top-left). Delete \
+                everything in the default Code.gs editor.
+                """,
+            link: URL(string: "https://script.google.com/home/projects/create")
+        ),
+        .init(
+            title: "Paste the Code.gs script",
+            body:
+                """
+                Choose a strong password (≥ 8 characters). It will be baked into \
+                the script as AUTH_KEY, and you'll use the same value in Shade \
+                as your Auth Key. Copy the result, paste it into the Apps Script \
+                editor, and save with ⌘S.
+                """,
+            showAuthKey: true,
+            codeKind: .codeGS_CF
+        ),
+        .init(
+            title: "Deploy Apps Script as a Web app",
+            body:
+                """
+                Click Deploy → New deployment. For "Select type" click the gear \
+                icon and pick Web app. Configure it like this:
+
+                  • Description: anything you want
+                  • Execute as: Me
+                  • Who has access: Anyone
+
+                Authorize the script when Google asks. After deploying, copy the \
+                Deployment ID — that's your Script ID.
+                """
+        ),
+        .init(
+            title: "Add the profile to Shade",
+            body:
+                """
+                Head back to the Dashboard, click + Add next to Profile, paste \
+                your Script ID and the password from step 5, and turn on the \
+                "Routes through Cloudflare Worker" toggle so this profile is \
+                tagged correctly. Save and hit Start.
+                """
+        ),
+    ]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                WizardHeader(
+                    title: "Cloudflare Worker Setup",
+                    subtitle: "Walks you through deploying both a Cloudflare Worker and a Google Apps Script that forwards to it. About 7 steps.",
+                    onBack: onBack,
+                    accent: accent
+                )
+                StepperBar(count: steps.count, current: step, accent: accent)
+                stepCard
             }
         }
     }
 
-    private struct Step {
-        let title: String
-        let body:  String
-        var link:  URL?    = nil
-        var showCode: Bool = false
+    private var stepCard: some View {
+        let s = steps[step]
+        return Card {
+            VStack(alignment: .leading, spacing: 14) {
+                StepCardHeader(index: step, total: steps.count, title: s.title, accent: accent)
+
+                Text(s.body)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if s.showWorkerURL {
+                    if workerURLConfirmed {
+                        ConfirmedHint(
+                            text: "Worker URL embedded: \(normalizedWorkerHost)",
+                            accent: accent,
+                            onChange: { workerURLConfirmed = false }
+                        )
+                    } else {
+                        WorkerURLPrompt(workerURL: $workerURLDraft, accent: accent) {
+                            workerURLConfirmed = true
+                        }
+                    }
+                }
+
+                if s.showAuthKey {
+                    if authKeyConfirmed {
+                        ConfirmedHint(
+                            text: "Auth key embedded: copy and paste the code below.",
+                            accent: accent,
+                            onChange: { authKeyConfirmed = false }
+                        )
+                    } else {
+                        AuthKeyPrompt(authKey: $authKeyDraft, accent: accent) {
+                            authKeyConfirmed = true
+                        }
+                    }
+                }
+
+                if let kind = s.codeKind, isCodeReady(for: kind) {
+                    CodeSnippet(
+                        filename: kind.filename,
+                        code: renderedCode(for: kind),
+                        accent: accent
+                    )
+                }
+
+                if let link = s.link {
+                    Link(destination: link) {
+                        Label(link.absoluteString, systemImage: "arrow.up.right.square")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                }
+
+                if step == steps.count - 1 {
+                    CloudflareTagReminder(accent: accent)
+                }
+
+                StepNavBar(
+                    step: $step,
+                    total: steps.count,
+                    accent: accent,
+                    nextDisabled: nextBlocked
+                )
+            }
+        }
+    }
+
+    // ── State helpers ────────────────────────────────────────────────
+
+    private var nextBlocked: Bool {
+        switch step {
+        case 2: return !workerURLConfirmed
+        case 4: return !authKeyConfirmed
+        default: return false
+        }
+    }
+
+    private func isCodeReady(for kind: WizardStep.CodeKind) -> Bool {
+        switch kind {
+        case .workerJS:  return workerURLConfirmed
+        case .codeGS_CF: return authKeyConfirmed && workerURLConfirmed
+        }
+    }
+
+    private func renderedCode(for kind: WizardStep.CodeKind) -> String {
+        switch kind {
+        case .workerJS:
+            return workerJS.replacingOccurrences(
+                of: "myworker.workers.dev",
+                with: normalizedWorkerHost
+            )
+        case .codeGS_CF:
+            return codeGS_Cloudflare
+                .replacingOccurrences(
+                    of: "STRONG_SECRET_KEY",
+                    with: authKeyDraft.replacingOccurrences(of: "\"", with: "\\\"")
+                )
+                .replacingOccurrences(
+                    of: "https://example.workers.dev",
+                    with: "https://" + normalizedWorkerHost
+                )
+        }
+    }
+
+    /// Strips scheme + trailing slash so we end with `myworker.workers.dev`.
+    private var normalizedWorkerHost: String {
+        var s = workerURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let range = s.range(of: "://") { s = String(s[range.upperBound...]) }
+        if s.hasSuffix("/") { s.removeLast() }
+        return s
     }
 }
 
-// MARK: - Auth key prompt (shown before snippet)
+// MARK: - Shared wizard chrome
+
+private struct WizardStep {
+    let title: String
+    let body:  String
+    var link:  URL?    = nil
+    var showAuthKey:    Bool = false
+    var showWorkerURL:  Bool = false
+    var codeKind:       CodeKind? = nil
+
+    enum CodeKind {
+        case workerJS, codeGS_CF
+        var filename: String {
+            switch self {
+            case .workerJS:  return "worker.js"
+            case .codeGS_CF: return "Code.gs"
+            }
+        }
+    }
+}
+
+private struct WizardHeader: View {
+    let title: String
+    let subtitle: String
+    let onBack: () -> Void
+    var accent: Color = .accentColor
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button(action: onBack) {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                    Text("Choose another setup")
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                Text(subtitle)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+private struct StepperBar: View {
+    let count: Int
+    let current: Int
+    let accent: Color
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(0..<count, id: \.self) { i in
+                Capsule()
+                    .fill(i <= current ? accent : .white.opacity(0.12))
+                    .frame(height: 4)
+                    .animation(.easeInOut(duration: 0.2), value: current)
+            }
+        }
+    }
+}
+
+private struct StepCardHeader: View {
+    let index: Int
+    let total: Int
+    let title: String
+    let accent: Color
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                Circle().fill(accent.opacity(0.18))
+                    .frame(width: 26, height: 26)
+                Text("\(index + 1)")
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .foregroundStyle(accent)
+            }
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
+            Spacer()
+            Text("Step \(index + 1) of \(total)")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct StepNavBar: View {
+    @Binding var step: Int
+    let total: Int
+    let accent: Color
+    var nextDisabled: Bool = false
+
+    var body: some View {
+        HStack {
+            Button {
+                if step > 0 { withAnimation { step -= 1 } }
+            } label: {
+                Label("Back", systemImage: "chevron.left")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(step > 0 ? AnyShapeStyle(.primary) : AnyShapeStyle(Color.secondary.opacity(0.4)))
+            .disabled(step == 0)
+
+            Spacer()
+
+            if step < total - 1 {
+                Button {
+                    withAnimation { step += 1 }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Next")
+                        Image(systemName: "chevron.right")
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .padding(.horizontal, 14).padding(.vertical, 7)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(accent)
+                .disabled(nextDisabled)
+                .opacity(nextDisabled ? 0.5 : 1.0)
+            }
+        }
+    }
+}
+
+private struct ConfirmedHint: View {
+    let text: String
+    let accent: Color
+    let onChange: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.seal.fill")
+                .foregroundStyle(.green)
+            Text(text)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            Button("Change", action: onChange)
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(accent)
+        }
+    }
+}
+
+private struct CloudflareTagReminder: View {
+    let accent: Color
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "cloud.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(accent)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Don't forget the Cloudflare toggle")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("In the Add Profile sheet, turn on \"Routes through Cloudflare Worker\". Tagged profiles get an orange marker on the dashboard and load-balance only with other Cloudflare profiles.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(accent.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(accent.opacity(0.3), lineWidth: 1)
+                )
+        )
+    }
+}
+
+// MARK: - Auth key prompt
 
 private struct AuthKeyPrompt: View {
     @Binding var authKey: String
+    var accent: Color = .accentColor
     var onConfirm: () -> Void
     @State private var isVisible: Bool = false
     @State private var copied: Bool = false
@@ -296,6 +783,7 @@ private struct AuthKeyPrompt: View {
                         .padding(.horizontal, 6)
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(accent)
                 .controlSize(.small)
                 .disabled(!isValid)
             }
@@ -324,16 +812,96 @@ private struct AuthKeyPrompt: View {
     }
 }
 
-// MARK: - Code snippet (copyable, scrollable)
+// MARK: - Worker URL prompt
+
+private struct WorkerURLPrompt: View {
+    @Binding var workerURL: String
+    var accent: Color = .orange
+    var onConfirm: () -> Void
+
+    private var trimmed: String {
+        var s = workerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let range = s.range(of: "://") { s = String(s[range.upperBound...]) }
+        if s.hasSuffix("/") { s.removeLast() }
+        return s
+    }
+
+    /// Anything ending in .workers.dev (or a custom hostname with a dot) passes.
+    private var isValid: Bool {
+        let t = trimmed.lowercased()
+        guard t.contains(".") else { return false }
+        guard !t.contains(" ") else { return false }
+        return t.count >= 6
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Enter your Worker URL")
+                .font(.system(size: 12, weight: .semibold))
+
+            Text("This is the address Cloudflare assigned your Worker — typically yourname.workers.dev. Paste it with or without https:// — we'll normalize it.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                TextField("myworker.workers.dev", text: $workerURL)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, design: .monospaced))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(.black.opacity(0.25))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(.white.opacity(0.08), lineWidth: 1)
+                            )
+                    )
+
+                Button {
+                    onConfirm()
+                } label: {
+                    Text("Use This URL")
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(accent)
+                .controlSize(.small)
+                .disabled(!isValid)
+            }
+
+            if !workerURL.isEmpty && !isValid {
+                Text("That doesn't look like a valid hostname.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(.black.opacity(0.25))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(.white.opacity(0.08), lineWidth: 1)
+                )
+        )
+    }
+}
+
+// MARK: - Code snippet
 
 private struct CodeSnippet: View {
+    let filename: String
     let code: String
+    var accent: Color = .accentColor
     @State private var copied = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Code.gs")
+                Text(filename)
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -350,7 +918,7 @@ private struct CodeSnippet: View {
                         .font(.system(size: 11, weight: .medium))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(copied ? .green : .accentColor)
+                .foregroundStyle(copied ? .green : accent)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -379,10 +947,10 @@ private struct CodeSnippet: View {
     }
 }
 
-// MARK: - Embedded Code.gs
+// MARK: - Embedded scripts
 
-extension SetupView {
-    static let codeGS: String = #"""
+/// Apps-Script-only Code.gs — fetches target URLs directly from Google.
+private let codeGS_AppsScriptOnly: String = #"""
 const AUTH_KEY = "CHANGE_ME_TO_A_STRONG_SECRET";
 
 const SKIP_HEADERS = {
@@ -479,4 +1047,239 @@ function _json(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 """#
+
+/// Cloudflare-routing Code.gs — forwards every request to the Worker.
+private let codeGS_Cloudflare: String = #"""
+/**
+ * DomainFront Relay — Google Apps Script With Cloudflare Worker Exit
+ *
+ * FLOW:
+ *   Client → GAS (Google Apps Script) → CFW (Cloudflare Worker) → Internet
+ *
+ * MODES:
+ *   1. Single:  POST { k, m, u, h, b, ct, r }       → { s, h, b }
+ *   2. Batch:   POST { k, q: [{m,u,h,b,ct,r}, ...] } → { q: [{s,h,b}, ...] }
+ */
+
+const AUTH_KEY = "STRONG_SECRET_KEY";
+const WORKER_URL = "https://example.workers.dev";
+
+const SKIP_HEADERS = {
+  host: 1, connection: 1, "content-length": 1,
+  "transfer-encoding": 1, "proxy-connection": 1, "proxy-authorization": 1,
+};
+
+function doPost(e) {
+  try {
+    var req = JSON.parse(e.postData.contents);
+    if (req.k !== AUTH_KEY) return _json({ e: "unauthorized" });
+
+    if (Array.isArray(req.q)) return _doBatch(req.q);
+    return _doSingle(req);
+
+  } catch (err) {
+    return _json({ e: String(err) });
+  }
 }
+
+function _doSingle(req) {
+  if (!req.u || typeof req.u !== "string" || !req.u.match(/^https?:\/\//i)) {
+    return _json({ e: "bad url" });
+  }
+
+  var payload = _buildWorkerPayload(req);
+
+  var resp = UrlFetchApp.fetch(WORKER_URL, {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+    followRedirects: true
+  });
+
+  try {
+    return _json(JSON.parse(resp.getContentText()));
+  } catch (e) {
+    return _json({ e: "invalid worker response", raw: resp.getContentText() });
+  }
+}
+
+function _doBatch(items) {
+  var fetchArgs = [];
+  var errorMap = {};
+
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i];
+
+    if (!item.u || typeof item.u !== "string" || !item.u.match(/^https?:\/\//i)) {
+      errorMap[i] = "bad url";
+      continue;
+    }
+
+    var payload = _buildWorkerPayload(item);
+
+    fetchArgs.push({
+      _i: i,
+      _o: {
+        url: WORKER_URL,
+        method: "post",
+        contentType: "application/json",
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true,
+        followRedirects: true
+      }
+    });
+  }
+
+  var responses = [];
+  if (fetchArgs.length > 0) {
+    responses = UrlFetchApp.fetchAll(fetchArgs.map(function(x) { return x._o; }));
+  }
+
+  var results = [];
+  var rIdx = 0;
+
+  for (var i = 0; i < items.length; i++) {
+    if (errorMap.hasOwnProperty(i)) {
+      results.push({ e: errorMap[i] });
+    } else {
+      var resp = responses[rIdx++];
+      try {
+        results.push(JSON.parse(resp.getContentText()));
+      } catch (e) {
+        results.push({ e: "invalid worker response", raw: resp.getContentText() });
+      }
+    }
+  }
+
+  return _json({ q: results });
+}
+
+function _buildWorkerPayload(req) {
+  var headers = {};
+
+  if (req.h && typeof req.h === "object") {
+    for (var k in req.h) {
+      if (req.h.hasOwnProperty(k) && !SKIP_HEADERS[k.toLowerCase()]) {
+        headers[k] = req.h[k];
+      }
+    }
+  }
+
+  return {
+    u: req.u,
+    m: (req.m || "GET").toUpperCase(),
+    h: headers,
+    b: req.b || null,
+    ct: req.ct || null,
+    r: req.r !== false
+  };
+}
+
+function doGet(e) {
+  return HtmlService.createHtmlOutput(
+    "<!DOCTYPE html><html><head><title>My App</title></head>" +
+      '<body style="font-family:sans-serif;max-width:600px;margin:40px auto">' +
+      "<h1>Relay Active</h1><p>Cloudflare Worker routing enabled.</p>" +
+      "</body></html>"
+  );
+}
+
+function _json(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+"""#
+
+/// Cloudflare Worker — fetches the target URL on behalf of the Apps Script.
+private let workerJS: String = #"""
+const WORKER_URL = "myworker.workers.dev";
+
+export default {
+  async fetch(request) {
+    try {
+      if (request.headers.get("x-relay-hop") === "1") {
+        return json({ e: "loop detected" }, 508);
+      }
+
+      const req = await request.json();
+
+      if (!req.u) {
+        return json({ e: "missing url" }, 400);
+      }
+
+      const targetUrl = new URL(req.u);
+
+      const BLOCKED_HOSTS = [
+        WORKER_URL,
+      ];
+
+      if (BLOCKED_HOSTS.some(h => targetUrl.hostname.endsWith(h))) {
+        return json({ e: "self-fetch blocked" }, 400);
+      }
+
+      const headers = new Headers();
+      if (req.h && typeof req.h === "object") {
+        for (const [k, v] of Object.entries(req.h)) {
+          headers.set(k, v);
+        }
+      }
+
+      headers.set("x-relay-hop", "1");
+
+      const fetchOptions = {
+        method: (req.m || "GET").toUpperCase(),
+        headers,
+        redirect: req.r === false ? "manual" : "follow"
+      };
+
+      if (req.b) {
+        const binary = Uint8Array.from(atob(req.b), c => c.charCodeAt(0));
+        fetchOptions.body = binary;
+      }
+
+      const resp = await fetch(targetUrl.toString(), fetchOptions);
+
+      // Read response safely (no stack overflow)
+      const buffer = await resp.arrayBuffer();
+      const uint8 = new Uint8Array(buffer);
+
+      let binary = "";
+      const chunkSize = 0x8000; // prevent call stack overflow
+
+      for (let i = 0; i < uint8.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(
+          null,
+          uint8.subarray(i, i + chunkSize)
+        );
+      }
+
+      const base64 = btoa(binary);
+
+      const responseHeaders = {};
+      resp.headers.forEach((v, k) => {
+        responseHeaders[k] = v;
+      });
+
+      return json({
+        s: resp.status,
+        h: responseHeaders,
+        b: base64
+      });
+
+    } catch (err) {
+      return json({ e: String(err) }, 500);
+    }
+  }
+};
+
+function json(obj, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: {
+      "content-type": "application/json"
+    }
+  });
+}
+"""#

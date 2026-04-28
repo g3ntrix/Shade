@@ -205,9 +205,14 @@ private struct CredentialsCard: View {
                     Button { showPicker = true } label: {
                         HStack(spacing: 10) {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(active?.name ?? "No profile selected")
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(.primary)
+                                HStack(spacing: 6) {
+                                    Text(active?.name ?? "No profile selected")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(.primary)
+                                    if active?.usesCloudflare == true {
+                                        CloudflareBadge()
+                                    }
+                                }
                                 if let cred = active, !cred.scriptID.isEmpty {
                                     Text(cred.scriptID.count > 28
                                          ? String(cred.scriptID.prefix(28)) + "…"
@@ -289,16 +294,29 @@ struct CredentialPickerSheet: View {
 
             Divider().opacity(0.3)
 
+            if app.settings.enableLoadBalancing {
+                LoadBalanceTypeBanner(
+                    activeUsesCloudflare: app.settings.activeCredential?.usesCloudflare ?? false
+                )
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+            }
+
             ScrollView {
                 VStack(spacing: 8) {
+                    let activeUsesCF = app.settings.activeCredential?.usesCloudflare ?? false
                     ForEach(app.settings.credentials) { cred in
+                        let lockedByType = app.settings.enableLoadBalancing
+                            && cred.usesCloudflare != activeUsesCF
                         CredentialRow(
                             credential: cred,
-                            isActive: app.settings.enableLoadBalancing 
-                                ? cred.isEnabledForLB 
+                            isActive: app.settings.enableLoadBalancing
+                                ? (cred.isEnabledForLB && !lockedByType)
                                 : cred.id == app.settings.activeCredential?.id,
                             isLB: app.settings.enableLoadBalancing,
+                            isLockedByType: lockedByType,
                             onSelect: {
+                                if lockedByType { return }
                                 if app.settings.enableLoadBalancing {
                                     // Toggle for LB
                                     if let idx = app.settings.credentials.firstIndex(where: { $0.id == cred.id }) {
@@ -356,23 +374,31 @@ private struct CredentialRow: View {
     let credential: Credential
     let isActive:   Bool
     var isLB:       Bool = false
+    var isLockedByType: Bool = false
     let onSelect:   () -> Void
     let onEdit:     () -> Void
     let onDelete:   () -> Void
+
+    private var accent: Color { credential.usesCloudflare ? .orange : .purple }
 
     var body: some View {
         HStack(spacing: 10) {
             Button(action: onSelect) {
                 HStack(spacing: 10) {
-                    Image(systemName: isLB 
+                    Image(systemName: isLB
                           ? (isActive ? "checkmark.square.fill" : "square")
                           : (isActive ? "checkmark.circle.fill" : "circle"))
-                        .foregroundStyle(isActive ? .purple : .secondary)
+                        .foregroundStyle(isActive ? accent : .secondary)
                         .font(.system(size: 17))
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(credential.name)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.primary)
+                        HStack(spacing: 5) {
+                            Text(credential.name)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(.primary)
+                            if credential.usesCloudflare {
+                                CloudflareBadge()
+                            }
+                        }
                         Text(credential.scriptID.isEmpty ? "No Script ID set"
                              : (credential.scriptID.count > 26
                                 ? String(credential.scriptID.prefix(26)) + "…"
@@ -384,6 +410,7 @@ private struct CredentialRow: View {
                 }
             }
             .buttonStyle(.plain)
+            .disabled(isLockedByType)
 
             Button(action: onEdit) {
                 Image(systemName: "pencil")
@@ -405,13 +432,17 @@ private struct CredentialRow: View {
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isActive ? .purple.opacity(0.15) : .white.opacity(0.04))
+                .fill(isActive ? accent.opacity(0.15) : .white.opacity(0.04))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(isActive ? .purple.opacity(0.3) : .white.opacity(0.06),
+                        .stroke(isActive ? accent.opacity(0.3) : .white.opacity(0.06),
                                 lineWidth: 1)
                 )
         )
+        .opacity(isLockedByType ? 0.4 : 1.0)
+        .help(isLockedByType
+              ? "Can't load-balance across mixed types. This profile uses a different egress than the active one."
+              : "")
     }
 }
 
@@ -426,6 +457,7 @@ struct CredentialEditSheet: View {
     @State private var name:     String = ""
     @State private var scriptID: String = ""
     @State private var authKey:  String = ""
+    @State private var usesCloudflare: Bool = false
     @State private var isAuthKeyVisible: Bool = false
     @State private var copied: Bool = false
 
@@ -507,17 +539,20 @@ struct CredentialEditSheet: View {
                     }
                     .editFieldStyle()
                 }
+
+                CloudflareToggle(isOn: $usesCloudflare)
             }
             .padding(20)
 
             Spacer()
         }
-        .frame(width: 360, height: 360)
+        .frame(width: 360, height: 440)
         .onAppear {
             if let cred = credential {
-                name     = cred.name
-                scriptID = cred.scriptID
-                authKey  = cred.authKey
+                name           = cred.name
+                scriptID       = cred.scriptID
+                authKey        = cred.authKey
+                usesCloudflare = cred.usesCloudflare
             }
         }
     }
@@ -533,11 +568,13 @@ struct CredentialEditSheet: View {
 
         if let existing = credential,
            let idx = app.settings.credentials.firstIndex(where: { $0.id == existing.id }) {
-            app.settings.credentials[idx].name     = resolvedName
-            app.settings.credentials[idx].scriptID = scriptID
-            app.settings.credentials[idx].authKey  = authKey
+            app.settings.credentials[idx].name           = resolvedName
+            app.settings.credentials[idx].scriptID       = scriptID
+            app.settings.credentials[idx].authKey        = authKey
+            app.settings.credentials[idx].usesCloudflare = usesCloudflare
         } else {
-            let cred = Credential(name: resolvedName, scriptID: scriptID, authKey: authKey)
+            let cred = Credential(name: resolvedName, scriptID: scriptID, authKey: authKey,
+                                  usesCloudflare: usesCloudflare)
             app.settings.credentials.append(cred)
             app.settings.activeCredentialID = cred.id
         }
@@ -1120,10 +1157,17 @@ private struct EditField<Content: View>: View {
 // MARK: - Cluster visualize
 struct ClusterPulse: View {
     @EnvironmentObject var app: AppState
-    
-    // We only show dots for scripts that are ENABLED for LB
+
+    // Match makeCoreConfig: only same-type LB-enabled scripts are in the pool.
     private var enabledScripts: [Credential] {
-        app.settings.credentials.filter { $0.isEnabledForLB }
+        let activeUsesCF = app.settings.activeCredential?.usesCloudflare ?? false
+        return app.settings.credentials.filter {
+            $0.isEnabledForLB && $0.usesCloudflare == activeUsesCF
+        }
+    }
+
+    private var accent: Color {
+        (app.settings.activeCredential?.usesCloudflare ?? false) ? .orange : .purple
     }
 
     var body: some View {
@@ -1131,7 +1175,8 @@ struct ClusterPulse: View {
             ForEach(enabledScripts) { cred in
                 PulseDot(sid: cred.scriptID,
                          isActive: app.activeSIDs.contains(cred.scriptID),
-                         isUnhealthy: app.unhealthySIDs.contains(cred.scriptID))
+                         isUnhealthy: app.unhealthySIDs.contains(cred.scriptID),
+                         accent: accent)
             }
             if enabledScripts.isEmpty {
                 Text("Select profiles to balance")
@@ -1146,11 +1191,12 @@ struct PulseDot: View {
     let sid: String
     let isActive: Bool
     let isUnhealthy: Bool
+    var accent: Color = .purple
 
     @State private var breathing = false
 
     private var dotColor: Color {
-        if isActive    { return .purple }
+        if isActive    { return accent }
         if isUnhealthy { return Color.red.opacity(0.55) }
         return Color.white.opacity(0.15)
     }
@@ -1185,6 +1231,104 @@ struct PulseDot: View {
         .help(isUnhealthy
               ? "Script \(sid.prefix(8))… — health check failed"
               : "Script \(sid.prefix(8))…")
+    }
+}
+
+// MARK: - Cloudflare badge / toggle / LB banner
+
+struct CloudflareBadge: View {
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "cloud.fill")
+                .font(.system(size: 8, weight: .bold))
+            Text("Cloudflare")
+                .font(.system(size: 9, weight: .semibold))
+        }
+        .foregroundStyle(.orange)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(
+            Capsule().fill(.orange.opacity(0.15))
+                .overlay(Capsule().stroke(.orange.opacity(0.35), lineWidth: 0.5))
+        )
+    }
+}
+
+struct CloudflareToggle: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "cloud.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(isOn ? .orange : .secondary)
+                .frame(width: 18, alignment: .center)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Routes through Cloudflare Worker")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Enable for profiles whose Apps Script forwards to a Cloudflare Worker. Affects load-balancing grouping and dashboard color.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 6)
+
+            Toggle("", isOn: $isOn)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+                .tint(.orange)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isOn ? .orange.opacity(0.08) : .white.opacity(0.04))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(isOn ? .orange.opacity(0.3) : .white.opacity(0.06),
+                                lineWidth: 1)
+                )
+        )
+    }
+}
+
+struct LoadBalanceTypeBanner: View {
+    let activeUsesCloudflare: Bool
+
+    private var typeAccent: Color { activeUsesCloudflare ? .orange : .purple }
+    private var typeLabel: String { activeUsesCloudflare ? "Cloudflare" : "regular" }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "info.circle.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(typeAccent)
+            (
+                Text("Load balancing only mixes ")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                + Text(typeLabel)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(typeAccent)
+                + Text(" profiles (matching the active one).")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+            )
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.white.opacity(0.04))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(.white.opacity(0.06), lineWidth: 1)
+                )
+        )
     }
 }
 
