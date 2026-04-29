@@ -125,6 +125,12 @@ class DomainFronter:
         
         self._script_ids = [c["id"] for c in self._script_configs]
         self._script_keys = {c["id"]: c["key"] for c in self._script_configs}
+        # Per-script Cloudflare flag — used by the startup health probe to pick
+        # a probe target that exercises the GAS → Worker → internet chain
+        # rather than just GAS → internet.
+        self._script_is_cf = {
+            c["id"]: bool(c.get("is_cf", False)) for c in self._script_configs
+        }
         
         self._script_idx = 0
         self.script_id = self._script_ids[0] if self._script_ids else "none"
@@ -874,9 +880,20 @@ class DomainFronter:
         async def probe(sid: str) -> tuple[str, str, str]:
             # GET (not HEAD) — Apps Script's UrlFetchApp.fetch() rejects HEAD
             # with "Property has been provided with invalid value: method".
+            #
+            # For Cloudflare-tagged scripts, the relay chain is:
+            #     core → GAS → Cloudflare Worker → target
+            # We use a Cloudflare endpoint that's always reachable and tiny,
+            # so a successful response confirms every hop is alive. For plain
+            # Apps Script scripts, example.com keeps the historical behaviour.
+            is_cf = self._script_is_cf.get(sid, False)
+            probe_url = (
+                "https://www.cloudflare.com/cdn-cgi/trace"
+                if is_cf else "http://example.com/"
+            )
             payload = {
                 "m": "GET",
-                "u": "http://example.com/",
+                "u": probe_url,
                 "k": self._script_keys.get(sid, ""),
             }
             path = self._exec_path_for_sid(sid)
@@ -909,9 +926,24 @@ class DomainFronter:
                 return sid, "bad", f"non-json:{snippet}"
             if not isinstance(data, dict):
                 return sid, "bad", "not-dict"
+
+            # Any `e` field means the relay chain failed end-to-end. For CF
+            # scripts this is how we catch a dead Worker (GAS responds, but
+            # its own UrlFetchApp.fetch(WORKER_URL) failed). For plain GAS
+            # scripts it catches misconfiguration (auth key, bad URL parsing).
             err = data.get("e")
-            if isinstance(err, str) and "unauthorized" in err.lower():
-                return sid, "bad", "unauthorized"
+            if isinstance(err, str) and err:
+                snippet = err[:80].replace("\n", " ")
+                return sid, "bad", snippet
+            # No error — relay reported back. Require an actual upstream
+            # status code so we know the fetch happened.
+            upstream_status = data.get("s")
+            if not isinstance(upstream_status, int):
+                return sid, "bad", "no-status"
+            # CF probe target is always 200; example.com is 200 (after
+            # follow-redirects). Anything 5xx from the target = chain broken.
+            if upstream_status >= 500:
+                return sid, "bad", f"upstream {upstream_status}"
             return sid, "ok", ""
 
         # Serialize probes (with mild concurrency) so we don't trip the H2
