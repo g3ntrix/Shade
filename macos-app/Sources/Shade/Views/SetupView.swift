@@ -956,7 +956,12 @@ const AUTH_KEY = "CHANGE_ME_TO_A_STRONG_SECRET";
 const SKIP_HEADERS = {
   host: 1, connection: 1, "content-length": 1,
   "transfer-encoding": 1, "proxy-connection": 1, "proxy-authorization": 1,
+  "priority": 1, te: 1,
+  "x-forwarded-for": 1, "x-forwarded-host": 1, "x-forwarded-proto": 1,
+  "x-forwarded-port": 1, "x-real-ip": 1, "forwarded": 1, "via": 1,
 };
+
+const SAFE_REPLAY_METHODS = { GET: 1, HEAD: 1, OPTIONS: 1 };
 
 function doPost(e) {
   try {
@@ -977,40 +982,81 @@ function _doSingle(req) {
   var resp = UrlFetchApp.fetch(req.u, opts);
   return _json({
     s: resp.getResponseCode(),
-    h: resp.getHeaders(),
+    h: _respHeaders(resp),
     b: Utilities.base64Encode(resp.getContent()),
   });
 }
 
 function _doBatch(items) {
   var fetchArgs = [];
+  var fetchIndex = [];
+  var fetchMethods = [];
   var errorMap = {};
   for (var i = 0; i < items.length; i++) {
     var item = items[i];
+    if (!item || typeof item !== "object") {
+      errorMap[i] = "bad item";
+      continue;
+    }
     if (!item.u || typeof item.u !== "string" || !item.u.match(/^https?:\/\//i)) {
       errorMap[i] = "bad url";
       continue;
     }
-    var opts = _buildOpts(item);
-    opts.url = item.u;
-    fetchArgs.push({ _i: i, _o: opts });
+    try {
+      var opts = _buildOpts(item);
+      opts.url = item.u;
+      fetchArgs.push(opts);
+      fetchIndex.push(i);
+      fetchMethods.push(String(item.m || "GET").toUpperCase());
+    } catch (err) {
+      errorMap[i] = String(err);
+    }
   }
   var responses = [];
   if (fetchArgs.length > 0) {
-    responses = UrlFetchApp.fetchAll(fetchArgs.map(function(x) { return x._o; }));
+    try {
+      responses = UrlFetchApp.fetchAll(fetchArgs);
+    } catch (err) {
+      responses = [];
+      for (var j = 0; j < fetchArgs.length; j++) {
+        try {
+          if (!SAFE_REPLAY_METHODS[fetchMethods[j]]) {
+            errorMap[fetchIndex[j]] = "batch fetchAll failed; unsafe method not replayed";
+            responses[j] = null;
+            continue;
+          }
+          var args = fetchArgs[j];
+          var url = args.url;
+          var fetchOpts = {};
+          for (var key in args) {
+            if (Object.prototype.hasOwnProperty.call(args, key) && key !== "url") {
+              fetchOpts[key] = args[key];
+            }
+          }
+          responses[j] = UrlFetchApp.fetch(url, fetchOpts);
+        } catch (singleErr) {
+          errorMap[fetchIndex[j]] = String(singleErr);
+          responses[j] = null;
+        }
+      }
+    }
   }
   var results = [];
   var rIdx = 0;
   for (var i = 0; i < items.length; i++) {
-    if (errorMap.hasOwnProperty(i)) {
+    if (Object.prototype.hasOwnProperty.call(errorMap, i)) {
       results.push({ e: errorMap[i] });
     } else {
       var resp = responses[rIdx++];
-      results.push({
-        s: resp.getResponseCode(),
-        h: resp.getHeaders(),
-        b: Utilities.base64Encode(resp.getContent()),
-      });
+      if (!resp) {
+        results.push({ e: "fetch failed" });
+      } else {
+        results.push({
+          s: resp.getResponseCode(),
+          h: _respHeaders(resp),
+          b: Utilities.base64Encode(resp.getContent()),
+        });
+      }
     }
   }
   return _json({ q: results });
@@ -1037,6 +1083,13 @@ function _buildOpts(req) {
     if (req.ct) opts.contentType = req.ct;
   }
   return opts;
+}
+
+function _respHeaders(resp) {
+  try {
+    if (typeof resp.getAllHeaders === "function") return resp.getAllHeaders();
+  } catch (err) {}
+  return resp.getHeaders();
 }
 
 function doGet(e) {
@@ -1067,7 +1120,12 @@ const WORKER_URL = "https://example.workers.dev";
 const SKIP_HEADERS = {
   host: 1, connection: 1, "content-length": 1,
   "transfer-encoding": 1, "proxy-connection": 1, "proxy-authorization": 1,
+  "priority": 1, te: 1,
+  "x-forwarded-for": 1, "x-forwarded-host": 1, "x-forwarded-proto": 1,
+  "x-forwarded-port": 1, "x-real-ip": 1, "forwarded": 1, "via": 1,
 };
+
+const SAFE_REPLAY_METHODS = { GET: 1, HEAD: 1, OPTIONS: 1 };
 
 function doPost(e) {
   try {
@@ -1106,48 +1164,86 @@ function _doSingle(req) {
 
 function _doBatch(items) {
   var fetchArgs = [];
+  var fetchIndex = [];
+  var fetchMethods = [];
   var errorMap = {};
 
   for (var i = 0; i < items.length; i++) {
     var item = items[i];
 
+    if (!item || typeof item !== "object") {
+      errorMap[i] = "bad item";
+      continue;
+    }
     if (!item.u || typeof item.u !== "string" || !item.u.match(/^https?:\/\//i)) {
       errorMap[i] = "bad url";
       continue;
     }
 
-    var payload = _buildWorkerPayload(item);
+    try {
+      var payload = _buildWorkerPayload(item);
 
-    fetchArgs.push({
-      _i: i,
-      _o: {
+      fetchArgs.push({
         url: WORKER_URL,
         method: "post",
         contentType: "application/json",
         payload: JSON.stringify(payload),
         muteHttpExceptions: true,
         followRedirects: true
-      }
-    });
+      });
+      fetchIndex.push(i);
+      fetchMethods.push("POST");
+    } catch (err) {
+      errorMap[i] = String(err);
+    }
   }
 
   var responses = [];
   if (fetchArgs.length > 0) {
-    responses = UrlFetchApp.fetchAll(fetchArgs.map(function(x) { return x._o; }));
+    try {
+      responses = UrlFetchApp.fetchAll(fetchArgs);
+    } catch (err) {
+      responses = [];
+      for (var j = 0; j < fetchArgs.length; j++) {
+        try {
+          if (!SAFE_REPLAY_METHODS[fetchMethods[j]]) {
+            errorMap[fetchIndex[j]] = "batch fetchAll failed; unsafe method not replayed";
+            responses[j] = null;
+            continue;
+          }
+          var args = fetchArgs[j];
+          var url = args.url;
+          var fetchOpts = {};
+          for (var key in args) {
+            if (Object.prototype.hasOwnProperty.call(args, key) && key !== "url") {
+              fetchOpts[key] = args[key];
+            }
+          }
+          responses[j] = UrlFetchApp.fetch(url, fetchOpts);
+        } catch (singleErr) {
+          errorMap[fetchIndex[j]] = String(singleErr);
+          responses[j] = null;
+        }
+      }
+    }
   }
 
   var results = [];
   var rIdx = 0;
 
   for (var i = 0; i < items.length; i++) {
-    if (errorMap.hasOwnProperty(i)) {
+    if (Object.prototype.hasOwnProperty.call(errorMap, i)) {
       results.push({ e: errorMap[i] });
     } else {
       var resp = responses[rIdx++];
-      try {
-        results.push(JSON.parse(resp.getContentText()));
-      } catch (e) {
-        results.push({ e: "invalid worker response", raw: resp.getContentText() });
+      if (!resp) {
+        results.push({ e: "fetch failed" });
+      } else {
+        try {
+          results.push(JSON.parse(resp.getContentText()));
+        } catch (e) {
+          results.push({ e: "invalid worker response", raw: resp.getContentText() });
+        }
       }
     }
   }
