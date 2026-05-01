@@ -9,6 +9,19 @@ struct LogsView: View {
                 Text("Logs")
                     .font(.system(size: 22, weight: .bold, design: .rounded))
                 Spacer()
+                
+                Toggle("Enable Logs", isOn: Binding(
+                    get: { app.settings.enableAppLogs },
+                    set: { newValue in
+                        app.settings.enableAppLogs = newValue
+                        app.saveSettings()
+                        if !newValue { app.clearLogs() }
+                    }
+                ))
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .padding(.trailing, 8)
+
                 Button("Clear") { app.clearLogs() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)

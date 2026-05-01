@@ -12,13 +12,18 @@ struct MenuBarView: View {
                 ShadeBrandImage(size: 34, cornerRadius: 8)
                     .shadow(color: .black.opacity(0.15), radius: 3, y: 1)
 
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text("Shade")
                         .font(.system(size: 13, weight: .bold, design: .rounded))
                     Text(headerSubtitle)
                         .font(.system(size: 10))
                         .foregroundStyle(subtitleColor)
                         .lineLimit(1)
+                    
+                    if app.settings.enableLoadBalancing && app.status.isRunning {
+                        MiniClusterPulse()
+                            .padding(.top, 3)
+                    }
                 }
 
                 Spacer()
@@ -83,17 +88,15 @@ struct MenuBarView: View {
             // ── Profile + uptime + system proxy ──────────────────────────────
             VStack(spacing: 10) {
                 // Profile row
-                HStack(spacing: 8) {
-                    Image(systemName: "person.crop.circle.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.purple)
-                    Text(app.settings.activeCredential?.name ?? "No Profile")
-                        .font(.system(size: 11, weight: .medium))
-                    Spacer()
-                    if app.status.isRunning, let started = app.startedAt {
-                        Text(format(interval: Date().timeIntervalSince(started)))
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                if !app.settings.enableLoadBalancing {
+                    HStack(spacing: 8) {
+                        Image(systemName: "person.crop.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.purple)
+                        Text(app.settings.activeCredential?.name ?? "No Profile")
+                            .font(.system(size: 11, weight: .medium))
+                        
+                        Spacer()
                     }
                 }
 
@@ -114,7 +117,7 @@ struct MenuBarView: View {
                     .labelsHidden()
                 }
 
-                // Listener address (compact)
+                // Listener address & Uptime
                 if app.status.isRunning {
                     HStack(spacing: 8) {
                         Image(systemName: "bolt.horizontal.circle")
@@ -124,6 +127,12 @@ struct MenuBarView: View {
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.secondary)
                         Spacer()
+                        
+                        if let started = app.startedAt {
+                            Text(format(interval: Date().timeIntervalSince(started)))
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
@@ -147,7 +156,16 @@ struct MenuBarView: View {
             .padding(.horizontal, 6)
         }
         .frame(width: 270)
-        .background(VisualEffectView(material: .menu, blendingMode: .behindWindow).ignoresSafeArea())
+        .background(
+            VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
+                .ignoresSafeArea()
+        )
+        .background(Color.black.opacity(0.15))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     // MARK: - Helpers
@@ -165,7 +183,7 @@ struct MenuBarView: View {
     private var subtitleColor: Color {
         switch app.status {
         case .running:              return .green
-        case .starting, .stopping:  return .yellow
+        case .starting, .stopping:  return .cyan
         case .error:                return .red
         case .stopped:              return .secondary
         }
@@ -367,5 +385,73 @@ struct VisualEffectView: NSViewRepresentable {
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
         nsView.blendingMode = blendingMode
+    }
+}
+
+// MARK: - Mini Cluster Pulse
+
+struct MiniClusterPulse: View {
+    @EnvironmentObject var app: AppState
+
+    private var allEnabled: [Credential] {
+        app.settings.credentials.filter { $0.isEnabledForLB }
+    }
+    
+    private var currentPoolIDs: Set<String> {
+        Set(app.settings.effectiveLBPool.map { $0.scriptID })
+    }
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(allEnabled) { cred in
+                MiniPulseDot(
+                    sid: cred.scriptID,
+                    isActive: app.activeSIDs.contains(cred.scriptID),
+                    isUnhealthy: app.unhealthySIDs.contains(cred.scriptID),
+                    isInCurrentPool: currentPoolIDs.contains(cred.scriptID),
+                    accent: cred.usesCloudflare ? .orange : .purple
+                )
+            }
+        }
+    }
+}
+
+struct MiniPulseDot: View {
+    let sid: String
+    let isActive: Bool
+    let isUnhealthy: Bool
+    var isInCurrentPool: Bool = true
+    var accent: Color = .purple
+
+    private var dotColor: Color {
+        if isActive    { return accent }
+        if isUnhealthy { return Color.red.opacity(0.55) }
+        return isInCurrentPool ? Color.white.opacity(0.25) : Color.white.opacity(0.08)
+    }
+
+    var body: some View {
+        ZStack {
+            if isActive {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 8, height: 8)
+                    .blur(radius: 3)
+                    .transition(.opacity.combined(with: .scale))
+            }
+
+            Circle()
+                .fill(dotColor)
+                .frame(width: 4, height: 4)
+                .overlay(
+                    Circle()
+                        .stroke(isActive ? Color.white.opacity(0.5) : Color.clear, lineWidth: 0.5)
+                )
+                .scaleEffect(isActive ? 1.3 : 1.0)
+                .opacity(!isInCurrentPool && !isActive ? 0.4 : (isUnhealthy && !isActive ? 0.7 : 1.0))
+        }
+        .frame(width: 8, height: 8)
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isActive)
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isUnhealthy)
+        .animation(.easeInOut(duration: 0.3), value: isInCurrentPool)
     }
 }

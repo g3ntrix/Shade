@@ -76,11 +76,13 @@ struct DashboardView: View {
                 // ── Google IP Scanner ────────────────────────────────────
                 GoogleIPScannerCard()
 
-                // ── System proxy toggle ──────────────────────────────────
-                SystemProxyCard()
+                HStack(spacing: 14) {
+                    // ── System proxy toggle ──────────────────────────────────
+                    SystemProxyCard()
 
-                // ── Advanced Settings ─────────────────────────────────────
-                AdvancedSettingsCard()
+                    // ── YouTube Relay toggle ─────────────────────────────────
+                    YouTubeRelayCard()
+                }
             }
         }
         .onAppear { startTimer() }
@@ -664,74 +666,65 @@ struct SystemProxyCard: View {
 
     var body: some View {
         Card {
-            HStack(alignment: .top, spacing: 14) {
-                Image(systemName: "network.badge.shield.half.filled")
-                    .font(.system(size: 22))
-                    .foregroundStyle(.orange)
-                VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Image(systemName: "network.badge.shield.half.filled")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.orange)
                     Text("System proxy")
                         .font(.system(size: 13, weight: .semibold))
-                    Text("Automatically route all macOS traffic through Shade's SOCKS5 port. When enabled, every app on this Mac uses the proxy without manual configuration.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Toggle("Set as system proxy", isOn: Binding(
+                    Spacer(minLength: 0)
+                    Toggle("", isOn: Binding(
                         get: { app.settings.useSystemProxy },
                         set: { newValue in Task { await app.setSystemProxy(newValue) } }
                     ))
                     .toggleStyle(.switch)
-                    if app.settings.useSystemProxy && app.status.isRunning {
-                        let host = app.settings.listenHost == "0.0.0.0"
-                            ? "127.0.0.1" : app.settings.listenHost
-                        let port = app.activeSOCKSPort > 0
-                            ? app.activeSOCKSPort : app.settings.socksPort
-                        Label {
-                            Text(verbatim: "SOCKS5 \(host):\(port)")
-                        } icon: {
-                            Image(systemName: "checkmark.circle.fill")
-                        }
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.green)
-                    }
+                    .controlSize(.small)
+                    .labelsHidden()
                 }
+                
+                Text("Route all macOS traffic.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                
                 Spacer(minLength: 0)
+
+                if app.settings.useSystemProxy && app.status.isRunning {
+                    let host = app.settings.listenHost == "0.0.0.0"
+                        ? "127.0.0.1" : app.settings.listenHost
+                    let port = app.activeSOCKSPort > 0
+                        ? app.activeSOCKSPort : app.settings.socksPort
+                    Label {
+                        Text(verbatim: "\(host):\(port)")
+                    } icon: {
+                        Image(systemName: "checkmark.circle.fill")
+                    }
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.green)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
 }
 
-// MARK: - Advanced Settings card
+// MARK: - YouTube Relay card
 
-struct AdvancedSettingsCard: View {
+struct YouTubeRelayCard: View {
     @EnvironmentObject var app: AppState
 
     var body: some View {
         Card {
-            HStack(alignment: .top, spacing: 14) {
-                Image(systemName: "gearshape.2.fill")
-                    .font(.system(size: 22))
-                    .foregroundStyle(.gray)
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Advanced Settings")
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Image(systemName: "play.rectangle.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.red)
+                    Text("YouTube Relay")
                         .font(.system(size: 13, weight: .semibold))
-
-                    // Log toggle
-                    Toggle("Enable application logs", isOn: Binding(
-                        get: { app.settings.enableAppLogs },
-                        set: { newValue in
-                            app.settings.enableAppLogs = newValue
-                            app.saveSettings()
-                            if !newValue { app.clearLogs() }
-                        }
-                    ))
-                    .toggleStyle(.switch)
-                    Text("Turn on to view raw logs. Disable to improve CPU performance.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .padding(.bottom, 6)
-
-                    // YouTube relay toggle
-                    Toggle("Route YouTube via Relay", isOn: Binding(
+                    Spacer(minLength: 0)
+                    Toggle("", isOn: Binding(
                         get: { app.settings.youtubeViaRelay },
                         set: { newValue in
                             app.settings.youtubeViaRelay = newValue
@@ -739,12 +732,18 @@ struct AdvancedSettingsCard: View {
                         }
                     ))
                     .toggleStyle(.switch)
-                    Text("Routes YouTube traffic through the proxy to bypass IP blocking. Requires a restart.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                    .controlSize(.small)
+                    .labelsHidden()
                 }
+                
+                Text("Bypass IP blocks for YT.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                
                 Spacer(minLength: 0)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
 }
@@ -1276,6 +1275,7 @@ struct PulseDot: View {
                 .scaleEffect(isActive ? 1.3 : 1.0)
                 .opacity(!isInCurrentPool && !isActive ? 0.4 : (isUnhealthy && !isActive ? 0.7 : 1.0))
         }
+        .frame(width: 16, height: 16)
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isActive)
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isUnhealthy)
         .animation(.easeInOut(duration: 0.3), value: isInCurrentPool)
