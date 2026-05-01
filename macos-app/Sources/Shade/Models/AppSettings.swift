@@ -237,9 +237,9 @@ struct AppSettings: Codable, Equatable {
         let cred = activeCredential
         let scriptsToUse = enableLoadBalancing ? effectiveLBPool : (cred.map { [$0] } ?? [])
 
-        let scriptConfigs: [[String: Any]] = scriptsToUse.map { c in
-            ["id": c.scriptID, "key": c.authKey, "is_cf": c.usesCloudflare]
-        }.filter { ($0["id"] as? String)?.isEmpty == false }
+        let scriptConfigs = scriptsToUse.map { c in
+            ["id": c.scriptID, "key": c.authKey]
+        }.filter { !($0["id"]?.isEmpty ?? true) }
 
         var dict: [String: Any] = [
             "mode":           "apps_script",
