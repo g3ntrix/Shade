@@ -120,6 +120,10 @@ struct AppSettings: Codable, Equatable {
     // ── System proxy ──────────────────────────────────────────────────────
     var useSystemProxy: Bool = false
 
+    // ── Advanced ──────────────────────────────────────────────────────────
+    var enableAppLogs: Bool = false
+    var youtubeViaRelay: Bool = false
+
     // MARK: Enums
 
     enum LogLevel: String, Codable, CaseIterable, Identifiable {
@@ -149,7 +153,7 @@ struct AppSettings: Codable, Equatable {
         case credentials, activeCredentialID, enableLoadBalancing, lbStrategy
         case listenHost, listenPort, socksPort
         case frontDomain, googleIP, verifySSL, logLevel
-        case useSystemProxy
+        case useSystemProxy, enableAppLogs, youtubeViaRelay
         // Legacy keys — only read for migration, never written
         case legacyScriptID = "scriptID"
         case legacyAuthKey  = "authKey"
@@ -181,6 +185,8 @@ struct AppSettings: Codable, Equatable {
         verifySSL            = (try? c.decode(Bool.self,       forKey: .verifySSL))            ?? true
         logLevel             = (try? c.decode(LogLevel.self,   forKey: .logLevel))             ?? .info
         useSystemProxy       = (try? c.decode(Bool.self,       forKey: .useSystemProxy))       ?? false
+        enableAppLogs        = (try? c.decode(Bool.self,       forKey: .enableAppLogs))        ?? false
+        youtubeViaRelay      = (try? c.decode(Bool.self,       forKey: .youtubeViaRelay))      ?? false
         enableLoadBalancing  = (try? c.decode(Bool.self,       forKey: .enableLoadBalancing))  ?? false
         lbStrategy           = (try? c.decode(LBStrategy.self, forKey: .lbStrategy))           ?? .balanced
     }
@@ -197,6 +203,8 @@ struct AppSettings: Codable, Equatable {
         try c.encode(verifySSL,           forKey: .verifySSL)
         try c.encode(logLevel,            forKey: .logLevel)
         try c.encode(useSystemProxy,      forKey: .useSystemProxy)
+        try c.encode(enableAppLogs,       forKey: .enableAppLogs)
+        try c.encode(youtubeViaRelay,     forKey: .youtubeViaRelay)
         try c.encode(enableLoadBalancing, forKey: .enableLoadBalancing)
         try c.encode(lbStrategy,          forKey: .lbStrategy)
         // lbFallbackActive is NOT encoded — it resets to false on every app launch.
@@ -254,7 +262,8 @@ struct AppSettings: Codable, Equatable {
             "socks5_host":    listenHost,
             "socks5_port":    socksPort,
             "log_level":      logLevel.rawValue,
-            "verify_ssl":     verifySSL
+            "verify_ssl":     verifySSL,
+            "youtube_via_relay": youtubeViaRelay
         ]
         dict = dict.compactMapValues { value -> Any? in
             if let s = value as? String { return s.isEmpty ? nil : s }

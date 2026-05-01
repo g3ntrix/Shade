@@ -78,6 +78,9 @@ struct DashboardView: View {
 
                 // ── System proxy toggle ──────────────────────────────────
                 SystemProxyCard()
+
+                // ── Advanced Settings ─────────────────────────────────────
+                AdvancedSettingsCard()
             }
         }
         .onAppear { startTimer() }
@@ -690,6 +693,55 @@ struct SystemProxyCard: View {
                             .font(.system(size: 10, weight: .medium, design: .monospaced))
                             .foregroundStyle(.green)
                     }
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+}
+
+// MARK: - Advanced Settings card
+
+struct AdvancedSettingsCard: View {
+    @EnvironmentObject var app: AppState
+
+    var body: some View {
+        Card {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "gearshape.2.fill")
+                    .font(.system(size: 22))
+                    .foregroundStyle(.gray)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Advanced Settings")
+                        .font(.system(size: 13, weight: .semibold))
+
+                    // Log toggle
+                    Toggle("Enable application logs", isOn: Binding(
+                        get: { app.settings.enableAppLogs },
+                        set: { newValue in
+                            app.settings.enableAppLogs = newValue
+                            app.saveSettings()
+                            if !newValue { app.clearLogs() }
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    Text("Turn on to view raw logs. Disable to improve CPU performance.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .padding(.bottom, 6)
+
+                    // YouTube relay toggle
+                    Toggle("Route YouTube via Relay", isOn: Binding(
+                        get: { app.settings.youtubeViaRelay },
+                        set: { newValue in
+                            app.settings.youtubeViaRelay = newValue
+                            app.saveSettings()
+                        }
+                    ))
+                    .toggleStyle(.switch)
+                    Text("Routes YouTube traffic through the proxy to bypass IP blocking. Requires a restart.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
             }

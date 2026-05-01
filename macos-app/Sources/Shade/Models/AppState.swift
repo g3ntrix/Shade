@@ -424,8 +424,10 @@ final class AppState: ObservableObject {
     // MARK: - Logs
 
     func append(_ line: LogLine) {
-        if logs.count > 5000 { logs.removeFirst(1000) }
-        logs.append(line)
+        if settings.enableAppLogs {
+            if logs.count > 5000 { logs.removeFirst(1000) }
+            logs.append(line)
+        }
         countTrafficBytes(in: line.text)
     }
 
