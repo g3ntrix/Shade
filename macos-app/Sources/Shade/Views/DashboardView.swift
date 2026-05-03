@@ -79,15 +79,9 @@ struct DashboardView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
-                if app.status.isRunning {
-                    HStack(spacing: 14) {
-                        // ── System proxy toggle ──────────────────────────
-                        SystemProxyCard()
-
-                        // ── YouTube Relay toggle ─────────────────────────
-                        YouTubeRelayCard()
-                    }
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                HStack(spacing: 14) {
+                    SystemProxyCard()
+                    YouTubeRelayCard()
                 }
             }
             .animation(.easeInOut(duration: 0.3), value: app.status.isRunning)

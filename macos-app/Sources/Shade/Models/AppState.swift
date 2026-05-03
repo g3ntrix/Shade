@@ -350,6 +350,8 @@ final class AppState: ObservableObject {
             }
 
             startHealthMonitor()
+
+            Task { await self.checkProxyEgressIP() }
         } catch {
             status = .error(error.localizedDescription)
             startedAt = nil

@@ -62,8 +62,7 @@ private struct SetupChooserView: View {
                         subtitle: "Apps Script + Worker, 7 steps",
                         details: "Apps Script forwards to a Worker. Traffic exits from Cloudflare IPs.",
                         icon: "cloud.fill",
-                        accent: .orange,
-                        recommended: true
+                        accent: .orange
                     ) {
                         onPick(.cloudflare)
                     }
@@ -89,7 +88,6 @@ private struct ChooserCard: View {
     let details: String
     let icon: String
     let accent: Color
-    var recommended: Bool = false
     let action: () -> Void
     @State private var hover = false
 
@@ -105,16 +103,6 @@ private struct ChooserCard: View {
                             .foregroundStyle(accent)
                     }
                     Spacer()
-                    if recommended {
-                        Text("RECOMMENDED")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(accent)
-                            .padding(.horizontal, 6).padding(.vertical, 3)
-                            .background(
-                                Capsule().fill(accent.opacity(0.15))
-                                    .overlay(Capsule().stroke(accent.opacity(0.35), lineWidth: 0.5))
-                            )
-                    }
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -559,36 +547,34 @@ private struct ExitNodeSetupView: View {
                 """
         ),
         .init(
-            title: "Create a val.town account",
+            title: "Open val.town and sign up",
             body:
                 """
-                Sign up at val.town (free tier is fine). Next step creates an HTTP val.
+                Open val.town in your browser. Create an account if you don’t already \
+                have one (free tier is fine).
                 """,
             link: URL(string: "https://www.val.town")
         ),
         .init(
-            title: "New HTTP val (TypeScript)",
-            body:
-                """
-                In val.town: New → HTTP → TypeScript. Leave the editor open; you will \
-                paste the script in the next step.
-                """
-        ),
-        .init(
-            title: "Set PSK and paste the script",
+            title: "Choose PSK and copy the script",
             body:
                 """
                 Pick a secret (≥ 8 chars). It is only for the val endpoint, not your \
-                Apps Script AUTH_KEY. Use This Key, paste the script into val.town, Save.
+                Apps Script AUTH_KEY. Use This Key — you will paste the generated script \
+                into main.ts in the next step.
                 """,
             showAuthKey: true
         ),
         .init(
-            title: "Copy your val’s public URL",
+            title: "main.ts, Save, trigger, copy URL",
             body:
                 """
-                After save, copy the public URL (often ends in .web.val.run). That is \
-                the Relay URL in Shade. A browser GET may show method_not_allowed; POST is normal.
+                Create or open an HTTP val (TypeScript). The editor opens main.ts \
+                by default — paste the full script there (replace what’s there) and Save.
+
+                Then click Add trigger → Respond to web requests. Copy the HTTP \
+                endpoint URL val shows there — that is your Relay URL in Shade (opening \
+                it in a browser may show method_not_allowed; POST from Apps Script is normal).
                 """
         ),
         .init(
@@ -636,7 +622,7 @@ private struct ExitNodeSetupView: View {
                     if pskConfirmed {
                         VStack(alignment: .leading, spacing: 8) {
                             ConfirmedHint(
-                                text: "PSK embedded: copy the script below into val.town.",
+                                text: "PSK embedded: copy the script below into main.ts on val.town.",
                                 accent: accent,
                                 onChange: { pskConfirmed = false }
                             )
@@ -670,7 +656,7 @@ private struct ExitNodeSetupView: View {
                     step: $step,
                     total: steps.count,
                     accent: accent,
-                    nextDisabled: step == 3 && !pskConfirmed
+                    nextDisabled: step == 2 && !pskConfirmed
                 )
             }
         }
