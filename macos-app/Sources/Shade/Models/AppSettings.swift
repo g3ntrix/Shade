@@ -214,7 +214,7 @@ struct AppSettings: Codable, Equatable {
     var enableExitNodeLB: Bool = false
     var exitNodeProfiles: [ExitNodeProfile] = []
     var activeExitNodeProfileID: UUID? = nil
-    var exitNodeMode: ExitNodeMode = .selective
+    var exitNodeMode: ExitNodeMode = .full
     /// Space- or comma-separated host suffixes (e.g. chatgpt.com openai.com).
     var exitNodeHosts: String = "chatgpt.com openai.com claude.ai x.com grok.com"
 
@@ -294,7 +294,7 @@ struct AppSettings: Codable, Equatable {
         enableExitNodeLB     = (try? c.decode(Bool.self,       forKey: .enableExitNodeLB))     ?? false
         exitNodeProfiles     = (try? c.decode([ExitNodeProfile].self, forKey: .exitNodeProfiles)) ?? []
         activeExitNodeProfileID = try? c.decode(UUID.self, forKey: .activeExitNodeProfileID)
-        exitNodeMode         = (try? c.decode(ExitNodeMode.self, forKey: .exitNodeMode))       ?? .selective
+        exitNodeMode         = (try? c.decode(ExitNodeMode.self, forKey: .exitNodeMode))       ?? .full
         exitNodeHosts        = (try? c.decode(String.self,     forKey: .exitNodeHosts))        ?? "chatgpt.com openai.com claude.ai x.com grok.com"
 
         if exitNodeProfiles.isEmpty {

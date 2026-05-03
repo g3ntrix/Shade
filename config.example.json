@@ -86,7 +86,7 @@
 	"youtube_via_relay": false,
 	"exit_node": {
 		"enabled": false,
-		"mode": "selective",
+		"mode": "full",
 		"relay_configs": [
 			{
 				"relay_url": "https://your-handle.web.val.run",
