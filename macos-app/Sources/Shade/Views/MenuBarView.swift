@@ -409,7 +409,8 @@ struct MiniClusterPulse: View {
                     isActive: app.activeSIDs.contains(cred.scriptID),
                     isUnhealthy: app.unhealthySIDs.contains(cred.scriptID),
                     isInCurrentPool: currentPoolIDs.contains(cred.scriptID),
-                    accent: cred.usesCloudflare ? .orange : .purple
+                    isStrategyPrimary: app.settings.isLBPulsePrimaryFocus(cred),
+                    accent: app.pulseAccent(for: cred)
                 )
             }
         }
@@ -421,17 +422,26 @@ struct MiniPulseDot: View {
     let isActive: Bool
     let isUnhealthy: Bool
     var isInCurrentPool: Bool = true
+    var isStrategyPrimary: Bool = true
     var accent: Color = .purple
 
     private var dotColor: Color {
-        if isActive    { return accent }
+        if isActive {
+            return isStrategyPrimary ? accent : accent.opacity(0.45)
+        }
         if isUnhealthy { return Color.red.opacity(0.55) }
-        return isInCurrentPool ? Color.white.opacity(0.25) : Color.white.opacity(0.08)
+        let emphasized = isInCurrentPool && isStrategyPrimary
+        return emphasized ? Color.white.opacity(0.25) : Color.white.opacity(0.08)
+    }
+
+    private var dimmedInactive: Bool {
+        (!isInCurrentPool && !isActive)
+            || (isInCurrentPool && !isStrategyPrimary && !isActive)
     }
 
     var body: some View {
         ZStack {
-            if isActive {
+            if isActive, isStrategyPrimary {
                 Circle()
                     .fill(dotColor)
                     .frame(width: 8, height: 8)
@@ -444,14 +454,15 @@ struct MiniPulseDot: View {
                 .frame(width: 4, height: 4)
                 .overlay(
                     Circle()
-                        .stroke(isActive ? Color.white.opacity(0.5) : Color.clear, lineWidth: 0.5)
+                        .stroke(isActive ? Color.white.opacity(isStrategyPrimary ? 0.5 : 0.35) : Color.clear, lineWidth: 0.5)
                 )
-                .scaleEffect(isActive ? 1.3 : 1.0)
-                .opacity(!isInCurrentPool && !isActive ? 0.4 : (isUnhealthy && !isActive ? 0.7 : 1.0))
+                .scaleEffect(isActive ? (isStrategyPrimary ? 1.3 : 1.08) : 1.0)
+                .opacity(dimmedInactive ? 0.4 : (isUnhealthy && !isActive ? 0.7 : 1.0))
         }
         .frame(width: 8, height: 8)
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isActive)
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isUnhealthy)
         .animation(.easeInOut(duration: 0.3), value: isInCurrentPool)
+        .animation(.easeInOut(duration: 0.3), value: isStrategyPrimary)
     }
 }

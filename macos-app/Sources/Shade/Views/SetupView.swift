@@ -1,11 +1,9 @@
 import SwiftUI
 import AppKit
 
-/// Top-level setup wizard. Lets the user pick between the Apps-Script-only
-/// flow (Code.gs hits target URLs directly) and the Cloudflare-Worker flow
-/// (Code.gs forwards to a Cloudflare Worker which fetches the target).
+/// Top-level setup wizard: Apps Script only, Cloudflare Worker, or val.town exit relay.
 struct SetupView: View {
-    enum Mode { case chooser, appsScript, cloudflare }
+    enum Mode { case chooser, appsScript, cloudflare, exitNode }
     @State private var mode: Mode = .chooser
 
     var body: some View {
@@ -20,6 +18,10 @@ struct SetupView: View {
             })
         case .cloudflare:
             CloudflareSetupView(onBack: {
+                withAnimation(.easeOut(duration: 0.2)) { mode = .chooser }
+            })
+        case .exitNode:
+            ExitNodeSetupView(onBack: {
                 withAnimation(.easeOut(duration: 0.2)) { mode = .chooser }
             })
         }
@@ -38,17 +40,17 @@ private struct SetupChooserView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Setup Guide")
                         .font(.system(size: 28, weight: .bold, design: .rounded))
-                    Text("Pick how you want Shade to relay your traffic. You can run multiple profiles of either type.")
+                    Text("Pick your main relay path. You can add val.town exit tunnels anytime under Settings → Exit node.")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                HStack(spacing: 14) {
+                HStack(alignment: .top, spacing: 14) {
                     ChooserCard(
                         title: "Apps Script only",
-                        subtitle: "Simplest setup — 5 steps",
-                        details: "Your relay runs entirely on Google Apps Script. Traffic exits through Google's IPs.",
+                        subtitle: "Simplest, 5 steps",
+                        details: "Relay on Google Apps Script only. Traffic exits from Google IPs.",
                         icon: "doc.text.fill",
                         accent: .accentColor
                     ) {
@@ -57,13 +59,23 @@ private struct SetupChooserView: View {
 
                     ChooserCard(
                         title: "Cloudflare Worker",
-                        subtitle: "Apps Script + Worker — 7 steps",
-                        details: "Apps Script forwards to a Cloudflare Worker that fetches the target. Your traffic exits through Cloudflare's IPs.",
+                        subtitle: "Apps Script + Worker, 7 steps",
+                        details: "Apps Script forwards to a Worker. Traffic exits from Cloudflare IPs.",
                         icon: "cloud.fill",
                         accent: .orange,
                         recommended: true
                     ) {
                         onPick(.cloudflare)
+                    }
+
+                    ChooserCard(
+                        title: "Exit node (val.town)",
+                        subtitle: "Optional, 6 steps",
+                        details: "Extra HTTP hop (e.g. val.town) for sites that block Google IPs. Add tunnels under Settings → Exit node.",
+                        icon: "arrow.turn.up.right",
+                        accent: .mint
+                    ) {
+                        onPick(.exitNode)
                     }
                 }
             }
@@ -178,6 +190,11 @@ private struct AppsScriptSetupView: View {
                 code below. Before saving, change the AUTH_KEY constant at the top \
                 to a strong secret of your choice: you'll enter the same value into
                 Shade as your Auth Key. Save with ⌘S.
+
+                This version can optionally send some requests through an exit relay \
+                (val.town, etc.): add tunnels under Settings → Exit node; host list \
+                and mode live in Settings → Exit node. The exit PSK and AUTH_KEY are \
+                two different secrets.
                 """,
             showAuthKey: true
         ),
@@ -214,6 +231,11 @@ private struct AppsScriptSetupView: View {
                 """
                 Head back to the Dashboard, click + Add next to Profile, paste your \
                 Script ID and Auth Key, and save. Hit Start and you're connected.
+
+                If you use an exit node: deploy it (Setup Guide → Exit node), add the \
+                URL and PSK under Settings → Exit node, tune host list under \
+                Settings → Exit node, then Stop → Start. Redeploy Apps Script when \
+                you replace Code.gs from this guide.
                 """
         ),
     ]
@@ -375,6 +397,12 @@ private struct CloudflareSetupView: View {
                 your Script ID and the password from step 5, and turn on the \
                 "Routes through Cloudflare Worker" toggle so this profile is \
                 tagged correctly. Save and hit Start.
+
+                If you use an exit node: deploy it (Setup Guide → Exit node), add \
+                tunnels under Settings → Exit node, tune routing under \
+                Settings → Exit node, then Stop → Start. This Code.gs tries the exit \
+                hop when Shade marks a request. Redeploy Apps Script after updating \
+                the snippet from this guide.
                 """
         ),
     ]
@@ -505,6 +533,147 @@ private struct CloudflareSetupView: View {
         if let range = s.range(of: "://") { s = String(s[range.upperBound...]) }
         if s.hasSuffix("/") { s.removeLast() }
         return s
+    }
+}
+
+// MARK: - Exit node (val.town) branch
+
+private struct ExitNodeSetupView: View {
+    let onBack: () -> Void
+    @State private var step: Int = 0
+    @State private var pskDraft: String = ""
+    @State private var pskConfirmed: Bool = false
+
+    private let accent: Color = .mint
+
+    private let steps: [WizardStep] = [
+        .init(
+            title: "What this does",
+            body:
+                """
+                Some sites dislike Google’s outbound IP. Shade can send matching \
+                requests through a small relay on val.town so the site sees val’s IP.
+
+                You still need an Apps Script or Cloudflare profile. This guide \
+                only deploys the val relay; paste URL + PSK under Settings → Exit node.
+                """
+        ),
+        .init(
+            title: "Create a val.town account",
+            body:
+                """
+                Sign up at val.town (free tier is fine). Next step creates an HTTP val.
+                """,
+            link: URL(string: "https://www.val.town")
+        ),
+        .init(
+            title: "New HTTP val (TypeScript)",
+            body:
+                """
+                In val.town: New → HTTP → TypeScript. Leave the editor open; you will \
+                paste the script in the next step.
+                """
+        ),
+        .init(
+            title: "Set PSK and paste the script",
+            body:
+                """
+                Pick a secret (≥ 8 chars). It is only for the val endpoint, not your \
+                Apps Script AUTH_KEY. Use This Key, paste the script into val.town, Save.
+                """,
+            showAuthKey: true
+        ),
+        .init(
+            title: "Copy your val’s public URL",
+            body:
+                """
+                After save, copy the public URL (often ends in .web.val.run). That is \
+                the Relay URL in Shade. A browser GET may show method_not_allowed; POST is normal.
+                """
+        ),
+        .init(
+            title: "Wire it into Shade",
+            body:
+                """
+                1. Redeploy Code.gs from the Apps Script or Cloudflare guide here if you have not already.
+
+                2. Settings → Exit node → + : paste Relay URL and the same PSK.
+
+                3. Turn on Allow val tunnel and Route through val. Stop → Start Shade.
+
+                With two or more tunnels, use LB on the card to round-robin.
+                """
+        ),
+    ]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                WizardHeader(
+                    title: "Exit node (val.town)",
+                    subtitle: "Deploy a val.town HTTP relay, then add it under Settings → Exit node.",
+                    onBack: onBack,
+                    accent: accent
+                )
+                StepperBar(count: steps.count, current: step, accent: accent)
+                stepCard
+            }
+        }
+    }
+
+    private var stepCard: some View {
+        let s = steps[step]
+        return Card {
+            VStack(alignment: .leading, spacing: 14) {
+                StepCardHeader(index: step, total: steps.count, title: s.title, accent: accent)
+
+                Text(s.body)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if s.showAuthKey {
+                    if pskConfirmed {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ConfirmedHint(
+                                text: "PSK embedded: copy the script below into val.town.",
+                                accent: accent,
+                                onChange: { pskConfirmed = false }
+                            )
+                            CodeSnippet(
+                                filename: "val HTTP val (TypeScript)",
+                                code: ValtownTemplate.withPSKEmbedded(pskDraft),
+                                accent: accent
+                            )
+                        }
+                    } else {
+                        AuthKeyPrompt(
+                            authKey: $pskDraft,
+                            accent: accent,
+                            title: "Choose exit PSK",
+                            detail:
+                                "Protects the val endpoint only. Same value as const PSK in the script "
+                                + "and in Shade (Settings → Exit node). Not your Apps Script AUTH_KEY.",
+                            onConfirm: { pskConfirmed = true }
+                        )
+                    }
+                }
+
+                if let link = s.link {
+                    Link(destination: link) {
+                        Label(link.absoluteString, systemImage: "arrow.up.right.square")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                }
+
+                StepNavBar(
+                    step: $step,
+                    total: steps.count,
+                    accent: accent,
+                    nextDisabled: step == 3 && !pskConfirmed
+                )
+            }
+        }
     }
 }
 
@@ -698,6 +867,9 @@ private struct CloudflareTagReminder: View {
 private struct AuthKeyPrompt: View {
     @Binding var authKey: String
     var accent: Color = .accentColor
+    var title: String = "Choose an Auth Key"
+    var detail: String =
+        "Pick a strong secret (at least 8 characters). It will be baked into the snippet below: the same value goes into Shade's profile as the Auth Key."
     var onConfirm: () -> Void
     @State private var isVisible: Bool = false
     @State private var copied: Bool = false
@@ -710,10 +882,10 @@ private struct AuthKeyPrompt: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Choose an Auth Key")
+            Text(title)
                 .font(.system(size: 12, weight: .semibold))
 
-            Text("Pick a strong secret (at least 8 characters). It will be baked into the snippet below: the same value goes into Shade's profile as the Auth Key.")
+            Text(detail)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -963,6 +1135,47 @@ const SKIP_HEADERS = {
 
 const SAFE_REPLAY_METHODS = { GET: 1, HEAD: 1, OPTIONS: 1 };
 
+function _fetchViaExitNode(req) {
+  try {
+    var en = req.en;
+    if (!en || typeof en !== "object") return null;
+    var relayUrl = en.relay_url;
+    var exitPsk = en.psk;
+    if (
+      !relayUrl ||
+      typeof relayUrl !== "string" ||
+      !relayUrl.match(/^https?:\/\//i) ||
+      !exitPsk ||
+      typeof exitPsk !== "string"
+    ) {
+      return null;
+    }
+    var inner = {
+      k: exitPsk,
+      u: req.u,
+      m: (req.m || "GET").toUpperCase(),
+    };
+    if (req.h && typeof req.h === "object") inner.h = req.h;
+    if (req.b) inner.b = req.b;
+    var resp = UrlFetchApp.fetch(relayUrl, {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(inner),
+      muteHttpExceptions: true,
+      followRedirects: true,
+    });
+    var text = resp.getContentText();
+    var data = JSON.parse(text);
+    if (data.e) return null;
+    if (typeof data.s !== "number") return null;
+    if (!data.h || typeof data.h !== "object") return null;
+    if (typeof data.b !== "string") return null;
+    return data;
+  } catch (err) {
+    return null;
+  }
+}
+
 function doPost(e) {
   try {
     var req = JSON.parse(e.postData.contents);
@@ -978,6 +1191,16 @@ function _doSingle(req) {
   if (!req.u || typeof req.u !== "string" || !req.u.match(/^https?:\/\//i)) {
     return _json({ e: "bad url" });
   }
+  if (req.en && req.en.relay_url && req.en.psk) {
+    var viaExit = _fetchViaExitNode(req);
+    if (viaExit) {
+      return _json({
+        s: viaExit.s,
+        h: viaExit.h,
+        b: viaExit.b,
+      });
+    }
+  }
   var opts = _buildOpts(req);
   var resp = UrlFetchApp.fetch(req.u, opts);
   return _json({
@@ -988,19 +1211,32 @@ function _doSingle(req) {
 }
 
 function _doBatch(items) {
+  var results = new Array(items.length);
   var fetchArgs = [];
   var fetchIndex = [];
   var fetchMethods = [];
-  var errorMap = {};
-  for (var i = 0; i < items.length; i++) {
+  var i;
+  var j;
+  for (i = 0; i < items.length; i++) {
     var item = items[i];
     if (!item || typeof item !== "object") {
-      errorMap[i] = "bad item";
+      results[i] = { e: "bad item" };
       continue;
     }
     if (!item.u || typeof item.u !== "string" || !item.u.match(/^https?:\/\//i)) {
-      errorMap[i] = "bad url";
+      results[i] = { e: "bad url" };
       continue;
+    }
+    if (item.en && item.en.relay_url && item.en.psk) {
+      var viaExit = _fetchViaExitNode(item);
+      if (viaExit) {
+        results[i] = {
+          s: viaExit.s,
+          h: viaExit.h,
+          b: viaExit.b,
+        };
+        continue;
+      }
     }
     try {
       var opts = _buildOpts(item);
@@ -1008,8 +1244,9 @@ function _doBatch(items) {
       fetchArgs.push(opts);
       fetchIndex.push(i);
       fetchMethods.push(String(item.m || "GET").toUpperCase());
+      results[i] = null;
     } catch (err) {
-      errorMap[i] = String(err);
+      results[i] = { e: String(err) };
     }
   }
   var responses = [];
@@ -1018,10 +1255,12 @@ function _doBatch(items) {
       responses = UrlFetchApp.fetchAll(fetchArgs);
     } catch (err) {
       responses = [];
-      for (var j = 0; j < fetchArgs.length; j++) {
+      for (j = 0; j < fetchArgs.length; j++) {
         try {
           if (!SAFE_REPLAY_METHODS[fetchMethods[j]]) {
-            errorMap[fetchIndex[j]] = "batch fetchAll failed; unsafe method not replayed";
+            results[fetchIndex[j]] = {
+              e: "batch fetchAll failed; unsafe method not replayed",
+            };
             responses[j] = null;
             continue;
           }
@@ -1035,28 +1274,24 @@ function _doBatch(items) {
           }
           responses[j] = UrlFetchApp.fetch(url, fetchOpts);
         } catch (singleErr) {
-          errorMap[fetchIndex[j]] = String(singleErr);
+          results[fetchIndex[j]] = { e: String(singleErr) };
           responses[j] = null;
         }
       }
     }
   }
-  var results = [];
   var rIdx = 0;
-  for (var i = 0; i < items.length; i++) {
-    if (Object.prototype.hasOwnProperty.call(errorMap, i)) {
-      results.push({ e: errorMap[i] });
+  for (i = 0; i < items.length; i++) {
+    if (results[i] !== null) continue;
+    var resp = responses[rIdx++];
+    if (!resp) {
+      if (!results[i]) results[i] = { e: "fetch failed" };
     } else {
-      var resp = responses[rIdx++];
-      if (!resp) {
-        results.push({ e: "fetch failed" });
-      } else {
-        results.push({
-          s: resp.getResponseCode(),
-          h: _respHeaders(resp),
-          b: Utilities.base64Encode(resp.getContent()),
-        });
-      }
+      results[i] = {
+        s: resp.getResponseCode(),
+        h: _respHeaders(resp),
+        b: Utilities.base64Encode(resp.getContent()),
+      };
     }
   }
   return _json({ q: results });
@@ -1097,7 +1332,16 @@ function doGet(e) {
 }
 
 function _json(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+  var out = {};
+  if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+    for (var k in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, k)) {
+        out[k] = obj[k];
+      }
+    }
+  }
+  out.cap = 2;
+  return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
 }
 """#
 
@@ -1127,6 +1371,47 @@ const SKIP_HEADERS = {
 
 const SAFE_REPLAY_METHODS = { GET: 1, HEAD: 1, OPTIONS: 1 };
 
+function _fetchViaExitNode(req) {
+  try {
+    var en = req.en;
+    if (!en || typeof en !== "object") return null;
+    var relayUrl = en.relay_url;
+    var exitPsk = en.psk;
+    if (
+      !relayUrl ||
+      typeof relayUrl !== "string" ||
+      !relayUrl.match(/^https?:\/\//i) ||
+      !exitPsk ||
+      typeof exitPsk !== "string"
+    ) {
+      return null;
+    }
+    var inner = {
+      k: exitPsk,
+      u: req.u,
+      m: (req.m || "GET").toUpperCase(),
+    };
+    if (req.h && typeof req.h === "object") inner.h = req.h;
+    if (req.b) inner.b = req.b;
+    var resp = UrlFetchApp.fetch(relayUrl, {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(inner),
+      muteHttpExceptions: true,
+      followRedirects: true,
+    });
+    var text = resp.getContentText();
+    var data = JSON.parse(text);
+    if (data.e) return null;
+    if (typeof data.s !== "number") return null;
+    if (!data.h || typeof data.h !== "object") return null;
+    if (typeof data.b !== "string") return null;
+    return data;
+  } catch (err) {
+    return null;
+  }
+}
+
 function doPost(e) {
   try {
     var req = JSON.parse(e.postData.contents);
@@ -1143,6 +1428,17 @@ function doPost(e) {
 function _doSingle(req) {
   if (!req.u || typeof req.u !== "string" || !req.u.match(/^https?:\/\//i)) {
     return _json({ e: "bad url" });
+  }
+
+  if (req.en && req.en.relay_url && req.en.psk) {
+    var viaExit = _fetchViaExitNode(req);
+    if (viaExit) {
+      return _json({
+        s: viaExit.s,
+        h: viaExit.h,
+        b: viaExit.b,
+      });
+    }
   }
 
   var payload = _buildWorkerPayload(req);
@@ -1163,21 +1459,35 @@ function _doSingle(req) {
 }
 
 function _doBatch(items) {
+  var results = new Array(items.length);
   var fetchArgs = [];
   var fetchIndex = [];
   var fetchMethods = [];
-  var errorMap = {};
+  var i;
+  var j;
 
-  for (var i = 0; i < items.length; i++) {
+  for (i = 0; i < items.length; i++) {
     var item = items[i];
 
     if (!item || typeof item !== "object") {
-      errorMap[i] = "bad item";
+      results[i] = { e: "bad item" };
       continue;
     }
     if (!item.u || typeof item.u !== "string" || !item.u.match(/^https?:\/\//i)) {
-      errorMap[i] = "bad url";
+      results[i] = { e: "bad url" };
       continue;
+    }
+
+    if (item.en && item.en.relay_url && item.en.psk) {
+      var viaExit = _fetchViaExitNode(item);
+      if (viaExit) {
+        results[i] = {
+          s: viaExit.s,
+          h: viaExit.h,
+          b: viaExit.b,
+        };
+        continue;
+      }
     }
 
     try {
@@ -1193,8 +1503,9 @@ function _doBatch(items) {
       });
       fetchIndex.push(i);
       fetchMethods.push("POST");
+      results[i] = null;
     } catch (err) {
-      errorMap[i] = String(err);
+      results[i] = { e: String(err) };
     }
   }
 
@@ -1204,10 +1515,12 @@ function _doBatch(items) {
       responses = UrlFetchApp.fetchAll(fetchArgs);
     } catch (err) {
       responses = [];
-      for (var j = 0; j < fetchArgs.length; j++) {
+      for (j = 0; j < fetchArgs.length; j++) {
         try {
           if (!SAFE_REPLAY_METHODS[fetchMethods[j]]) {
-            errorMap[fetchIndex[j]] = "batch fetchAll failed; unsafe method not replayed";
+            results[fetchIndex[j]] = {
+              e: "batch fetchAll failed; unsafe method not replayed",
+            };
             responses[j] = null;
             continue;
           }
@@ -1221,29 +1534,24 @@ function _doBatch(items) {
           }
           responses[j] = UrlFetchApp.fetch(url, fetchOpts);
         } catch (singleErr) {
-          errorMap[fetchIndex[j]] = String(singleErr);
+          results[fetchIndex[j]] = { e: String(singleErr) };
           responses[j] = null;
         }
       }
     }
   }
 
-  var results = [];
   var rIdx = 0;
-
-  for (var i = 0; i < items.length; i++) {
-    if (Object.prototype.hasOwnProperty.call(errorMap, i)) {
-      results.push({ e: errorMap[i] });
+  for (i = 0; i < items.length; i++) {
+    if (results[i] !== null) continue;
+    var resp = responses[rIdx++];
+    if (!resp) {
+      if (!results[i]) results[i] = { e: "fetch failed" };
     } else {
-      var resp = responses[rIdx++];
-      if (!resp) {
-        results.push({ e: "fetch failed" });
-      } else {
-        try {
-          results.push(JSON.parse(resp.getContentText()));
-        } catch (e) {
-          results.push({ e: "invalid worker response", raw: resp.getContentText() });
-        }
+      try {
+        results[i] = JSON.parse(resp.getContentText());
+      } catch (e) {
+        results[i] = { e: "invalid worker response", raw: resp.getContentText() };
       }
     }
   }
@@ -1282,8 +1590,17 @@ function doGet(e) {
 }
 
 function _json(obj) {
+  var out = {};
+  if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+    for (var k in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, k)) {
+        out[k] = obj[k];
+      }
+    }
+  }
+  out.cap = 2;
   return ContentService
-    .createTextOutput(JSON.stringify(obj))
+    .createTextOutput(JSON.stringify(out))
     .setMimeType(ContentService.MimeType.JSON);
 }
 """#

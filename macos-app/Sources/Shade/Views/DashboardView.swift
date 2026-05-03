@@ -68,22 +68,29 @@ struct DashboardView: View {
                 // ── Profile ──────────────────────────────────────────────
                 CredentialsCard()
 
-                // ── Connectivity test (only while running) ───────────────
+                // ── Connectivity row (only while running) ─────────────────
                 if app.status.isRunning {
-                    ConnectivityTestCard()
+                    HStack(alignment: .top, spacing: 14) {
+                        ConnectivityTestCard()
+                            .frame(maxWidth: .infinity, alignment: .top)
+                        RouteIPCard()
+                            .frame(maxWidth: .infinity, alignment: .top)
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
-                // ── Google IP Scanner ────────────────────────────────────
-                GoogleIPScannerCard()
+                if app.status.isRunning {
+                    HStack(spacing: 14) {
+                        // ── System proxy toggle ──────────────────────────
+                        SystemProxyCard()
 
-                HStack(spacing: 14) {
-                    // ── System proxy toggle ──────────────────────────────────
-                    SystemProxyCard()
-
-                    // ── YouTube Relay toggle ─────────────────────────────────
-                    YouTubeRelayCard()
+                        // ── YouTube Relay toggle ─────────────────────────
+                        YouTubeRelayCard()
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
+            .animation(.easeInOut(duration: 0.3), value: app.status.isRunning)
         }
         .onAppear { startTimer() }
         .onDisappear { timer?.invalidate() }
@@ -137,7 +144,7 @@ struct DashboardView: View {
 private struct CredentialsCard: View {
     @EnvironmentObject var app: AppState
     @State private var showPicker = false
-    @State private var showEdit   = false
+    @State private var showAddSheet = false
     @State private var editTarget: Credential? = nil
 
     private var active: Credential? { app.settings.activeCredential }
@@ -190,8 +197,7 @@ private struct CredentialsCard: View {
                     .opacity(app.status.isRunning || app.status.isTransitioning ? 0.6 : 1.0)
 
                     Button {
-                        editTarget = nil
-                        showEdit   = true
+                        showAddSheet = true
                     } label: {
                         Image(systemName: "plus.circle.fill")
                             .font(.system(size: 14))
@@ -219,8 +225,7 @@ private struct CredentialsCard: View {
                             .foregroundStyle(.secondary.opacity(0.7))
                             .multilineTextAlignment(.center)
                         Button {
-                            editTarget = nil
-                            showEdit   = true
+                            showAddSheet = true
                         } label: {
                             Label("Add First Profile", systemImage: "plus.circle.fill")
                                 .font(.system(size: 12, weight: .semibold))
@@ -243,6 +248,9 @@ private struct CredentialsCard: View {
                                         .foregroundStyle(.primary)
                                     if active?.usesCloudflare == true {
                                         CloudflareBadge()
+                                    }
+                                    if active?.usesValTunnel == true {
+                                        ValBadge()
                                     }
                                 }
                                 if let cred = active, !cred.scriptID.isEmpty {
@@ -278,7 +286,6 @@ private struct CredentialsCard: View {
                             Spacer()
                             Button {
                                 editTarget = active
-                                showEdit   = true
                             } label: {
                                 Label("Edit profile", systemImage: "pencil")
                                     .font(.system(size: 10))
@@ -294,8 +301,12 @@ private struct CredentialsCard: View {
             CredentialPickerSheet()
                 .environmentObject(app)
         }
-        .sheet(isPresented: $showEdit) {
-            CredentialEditSheet(credential: editTarget)
+        .sheet(item: $editTarget) { cred in
+            CredentialEditSheet(credential: cred)
+                .environmentObject(app)
+        }
+        .sheet(isPresented: $showAddSheet) {
+            CredentialEditSheet(credential: nil)
                 .environmentObject(app)
         }
     }
@@ -306,7 +317,7 @@ private struct CredentialsCard: View {
 struct CredentialPickerSheet: View {
     @EnvironmentObject var app: AppState
     @Environment(\.dismiss) var dismiss
-    @State private var showEdit    = false
+    @State private var showAddSheet = false
     @State private var editTarget: Credential? = nil
 
     var body: some View {
@@ -326,6 +337,36 @@ struct CredentialPickerSheet: View {
 
             Divider().opacity(0.3)
 
+            if app.settings.enableLoadBalancing {
+                HStack(spacing: 12) {
+                    Button("Select all") {
+                        for i in app.settings.credentials.indices {
+                            app.settings.credentials[i].isEnabledForLB = true
+                        }
+                        app.saveSettings()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.purple)
+
+                    Spacer()
+
+                    Button("Deselect all") {
+                        for i in app.settings.credentials.indices {
+                            app.settings.credentials[i].isEnabledForLB = false
+                        }
+                        app.saveSettings()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+
+                Divider().opacity(0.3)
+            }
+
             ScrollView {
                 VStack(spacing: 8) {
                     let strategy = app.settings.lbStrategy
@@ -336,6 +377,7 @@ struct CredentialPickerSheet: View {
                         switch strategy {
                         case .cfOnly: return cred.usesCloudflare
                         case .normalOnly: return !cred.usesCloudflare
+                        case .valOnly: return cred.usesValTunnel
                         default: return true
                         }
                     }
@@ -358,9 +400,20 @@ struct CredentialPickerSheet: View {
                                 app.saveSettings()
                                 if !app.settings.enableLoadBalancing { dismiss() }
                             },
+                            onToggleCloudflare: {
+                                if let idx = app.settings.credentials.firstIndex(where: { $0.id == cred.id }) {
+                                    app.settings.credentials[idx].usesCloudflare.toggle()
+                                    app.saveSettings()
+                                }
+                            },
+                            onToggleValTunnel: {
+                                if let idx = app.settings.credentials.firstIndex(where: { $0.id == cred.id }) {
+                                    app.settings.credentials[idx].usesValTunnel.toggle()
+                                    app.saveSettings()
+                                }
+                            },
                             onEdit: {
                                 editTarget = cred
-                                showEdit   = true
                             },
                             onDelete: {
                                 app.settings.credentials.removeAll { $0.id == cred.id }
@@ -379,8 +432,7 @@ struct CredentialPickerSheet: View {
             Divider().opacity(0.3)
 
             Button {
-                editTarget = nil
-                showEdit   = true
+                showAddSheet = true
             } label: {
                 Label("Add New Profile", systemImage: "plus.circle.fill")
                     .font(.system(size: 13, weight: .semibold))
@@ -389,9 +441,13 @@ struct CredentialPickerSheet: View {
             .buttonStyle(.plain)
             .padding(20)
         }
-        .frame(width: 340, height: 400)
-        .sheet(isPresented: $showEdit) {
-            CredentialEditSheet(credential: editTarget)
+        .frame(width: 340, height: 440)
+        .sheet(item: $editTarget) { cred in
+            CredentialEditSheet(credential: cred)
+                .environmentObject(app)
+        }
+        .sheet(isPresented: $showAddSheet) {
+            CredentialEditSheet(credential: nil)
                 .environmentObject(app)
         }
     }
@@ -404,10 +460,16 @@ private struct CredentialRow: View {
     let isActive:   Bool
     var isLB:       Bool = false
     let onSelect:   () -> Void
+    let onToggleCloudflare: () -> Void
+    let onToggleValTunnel: () -> Void
     let onEdit:     () -> Void
     let onDelete:   () -> Void
 
-    private var accent: Color { credential.usesCloudflare ? .orange : .purple }
+    private var accent: Color {
+        if credential.usesCloudflare { return .orange }
+        if credential.usesValTunnel { return .mint }
+        return .purple
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -426,6 +488,9 @@ private struct CredentialRow: View {
                             if credential.usesCloudflare {
                                 CloudflareBadge()
                             }
+                            if credential.usesValTunnel {
+                                ValBadge()
+                            }
                         }
                         Text(credential.scriptID.isEmpty ? "No Script ID set"
                              : (credential.scriptID.count > 26
@@ -438,6 +503,28 @@ private struct CredentialRow: View {
                 }
             }
             .buttonStyle(.plain)
+
+            HStack(spacing: 4) {
+                Button(action: onToggleCloudflare) {
+                    TagChipIcon(
+                        icon: "cloud.fill",
+                        tint: .orange,
+                        isEnabled: credential.usesCloudflare
+                    )
+                }
+                .buttonStyle(.plain)
+                .help(credential.usesCloudflare ? "Remove Cloudflare tag" : "Assign Cloudflare tag")
+
+                Button(action: onToggleValTunnel) {
+                    TagChipIcon(
+                        icon: "arrow.turn.up.right",
+                        tint: .mint,
+                        isEnabled: credential.usesValTunnel
+                    )
+                }
+                .buttonStyle(.plain)
+                .help(credential.usesValTunnel ? "Remove val tag" : "Assign val tag")
+            }
 
             Button(action: onEdit) {
                 Image(systemName: "pencil")
@@ -481,6 +568,7 @@ struct CredentialEditSheet: View {
     @State private var scriptID: String = ""
     @State private var authKey:  String = ""
     @State private var usesCloudflare: Bool = false
+    @State private var usesValTunnel: Bool = false
     @State private var isAuthKeyVisible: Bool = false
 
     private var isNew: Bool { credential == nil }
@@ -506,60 +594,62 @@ struct CredentialEditSheet: View {
 
             Divider().opacity(0.3)
 
-            VStack(spacing: 18) {
-                EditField(label: "PROFILE NAME", hint: "e.g. Home, School, Work") {
-                    TextField("Default", text: $name)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13))
-                        .editFieldStyle()
-                }
-
-                EditField(label: "SCRIPT ID",
-                          hint: "Deployment ID from your Google Apps Script web app") {
-                    TextField("AKfycb…", text: $scriptID)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12, design: .monospaced))
-                        .editFieldStyle()
-                }
-
-                EditField(label: "AUTH KEY",
-                          hint: "The same AUTH_KEY you set in Code.gs") {
-                    HStack(spacing: 0) {
-                        if isAuthKeyVisible {
-                            TextField("", text: $authKey)
-                                .textFieldStyle(.plain)
-                                .font(.system(size: 12, design: .monospaced))
-                        } else {
-                            SecureField("", text: $authKey)
-                                .textFieldStyle(.plain)
-                                .font(.system(size: 12, design: .monospaced))
-                        }
-
-                        Button {
-                            isAuthKeyVisible.toggle()
-                        } label: {
-                            Image(systemName: isAuthKeyVisible ? "eye.slash" : "eye")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
+            ScrollView {
+                VStack(spacing: 18) {
+                    EditField(label: "PROFILE NAME", hint: "e.g. Home, School, Work") {
+                        TextField("Default", text: $name)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 13))
+                            .editFieldStyle()
                     }
-                    .editFieldStyle()
+
+                    EditField(label: "SCRIPT ID",
+                              hint: "Deployment ID from your Google Apps Script web app") {
+                        TextField("AKfycb…", text: $scriptID)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12, design: .monospaced))
+                            .editFieldStyle()
+                    }
+
+                    EditField(label: "AUTH KEY",
+                              hint: "The same AUTH_KEY you set in Code.gs") {
+                        HStack(spacing: 0) {
+                            if isAuthKeyVisible {
+                                TextField("", text: $authKey)
+                                    .textFieldStyle(.plain)
+                                    .font(.system(size: 12, design: .monospaced))
+                            } else {
+                                SecureField("", text: $authKey)
+                                    .textFieldStyle(.plain)
+                                    .font(.system(size: 12, design: .monospaced))
+                            }
+
+                            Button {
+                                isAuthKeyVisible.toggle()
+                            } label: {
+                                Image(systemName: isAuthKeyVisible ? "eye.slash" : "eye")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .editFieldStyle()
+                    }
+
+                    CloudflareToggle(isOn: $usesCloudflare)
+                    ValTunnelToggle(isOn: $usesValTunnel)
                 }
-
-                CloudflareToggle(isOn: $usesCloudflare)
+                .padding(20)
             }
-            .padding(20)
-
-            Spacer()
         }
-        .frame(width: 360, height: 440)
+        .frame(width: 360, height: 520)
         .onAppear {
             if let cred = credential {
                 name           = cred.name
                 scriptID       = cred.scriptID
                 authKey        = cred.authKey
                 usesCloudflare = cred.usesCloudflare
+                usesValTunnel  = cred.usesValTunnel
             }
         }
     }
@@ -579,9 +669,10 @@ struct CredentialEditSheet: View {
             app.settings.credentials[idx].scriptID       = scriptID
             app.settings.credentials[idx].authKey        = authKey
             app.settings.credentials[idx].usesCloudflare = usesCloudflare
+            app.settings.credentials[idx].usesValTunnel  = usesValTunnel
         } else {
             let cred = Credential(name: resolvedName, scriptID: scriptID, authKey: authKey,
-                                  usesCloudflare: usesCloudflare)
+                                  usesCloudflare: usesCloudflare, usesValTunnel: usesValTunnel)
             app.settings.credentials.append(cred)
             app.settings.activeCredentialID = cred.id
         }
@@ -597,63 +688,154 @@ struct ConnectivityTestCard: View {
 
     var body: some View {
         Card {
-            HStack(spacing: 14) {
-                Image(systemName: "speedometer")
-                    .font(.system(size: 22))
-                    .foregroundStyle(.mint)
-
-                VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: "speedometer")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.mint)
                     Text("Connection test")
                         .font(.system(size: 13, weight: .semibold))
-                    Text("Measures round-trip time to YouTube through the proxy.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
                 }
 
-                Spacer()
-
-                if case .testing = app.testResult {
-                    ProgressView().controlSize(.small).padding(.trailing, 8)
-                }
-                if case .success(let ms) = app.testResult {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(ms < 1500 ? Color.green : (ms < 4000 ? Color.yellow : Color.red))
-                            .frame(width: 8, height: 8)
-                        Text("\(ms) ms")
-                            .font(.system(size: 13, weight: .bold, design: .monospaced))
-                            .foregroundStyle(ms < 1500 ? Color.green : (ms < 4000 ? Color.yellow : Color.red))
-                    }
-                    .padding(.trailing, 8)
-                }
-                if case .failure(let msg) = app.testResult {
-                    Text(msg)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.red)
+                HStack(alignment: .center) {
+                    statusView
+                    Spacer(minLength: 8)
+                    Button {
+                        Task { await app.testYouTubeDelay() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "play.circle.fill").font(.system(size: 13))
+                            Text("Test").font(.system(size: 12, weight: .semibold))
+                        }
+                        .foregroundColor(.white)
                         .lineLimit(1)
-                        .frame(maxWidth: 140, alignment: .trailing)
-                        .padding(.trailing, 8)
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(LinearGradient(
+                                    colors: [.mint, .cyan.opacity(0.8)],
+                                    startPoint: .topLeading, endPoint: .bottomTrailing))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(app.testResult == .testing)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    @ViewBuilder
+    private var statusView: some View {
+        if case .testing = app.testResult {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Testing...")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        } else if case .success(let ms) = app.testResult {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(ms < 1500 ? Color.green : (ms < 4000 ? Color.yellow : Color.red))
+                    .frame(width: 8, height: 8)
+                Text("\(ms) ms")
+                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                    .foregroundStyle(ms < 1500 ? Color.green : (ms < 4000 ? Color.yellow : Color.red))
+            }
+        } else if case .failure(let msg) = app.testResult {
+            Text(msg)
+                .font(.system(size: 11))
+                .foregroundStyle(.red)
+                .lineLimit(1)
+        } else {
+            Text("Not tested yet")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct RouteIPCard: View {
+    @EnvironmentObject var app: AppState
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: "globe.americas.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.cyan)
+                    Text("Egress IP")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer(minLength: 0)
                 }
 
-                Button {
-                    Task { await app.testYouTubeDelay() }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "play.circle.fill").font(.system(size: 14))
-                        Text("Test").font(.system(size: 12, weight: .semibold))
+                HStack(alignment: .center) {
+                    egressStatusView
+                    Spacer(minLength: 8)
+                    Button {
+                        Task { await app.checkProxyEgressIP() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 13))
+                            Text("Check").font(.system(size: 12, weight: .semibold))
+                        }
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(LinearGradient(
+                                    colors: [.cyan, .mint.opacity(0.85)],
+                                    startPoint: .topLeading, endPoint: .bottomTrailing))
+                        )
                     }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 16).padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(LinearGradient(
-                                colors: [.mint, .cyan.opacity(0.8)],
-                                startPoint: .topLeading, endPoint: .bottomTrailing))
-                    )
+                    .buttonStyle(.plain)
+                    .disabled(app.isCheckingProxyEgressIP)
                 }
-                .buttonStyle(.plain)
-                .disabled(app.testResult == .testing)
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    @ViewBuilder
+    private var egressStatusView: some View {
+        if app.isCheckingProxyEgressIP {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Checking…")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            switch app.proxyEgressIP {
+            case .success(let ip):
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 8, height: 8)
+                    Text(ip)
+                        .font(.system(size: 13, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.green)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            case .failure(let msg):
+                Text(msg)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+            case .unavailable(let msg):
+                Text(msg)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            case .idle:
+                Text("Not checked yet")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -1187,7 +1369,7 @@ struct PowerButton: View {
 
 // MARK: - EditField helper (used inside sheets)
 
-private struct EditField<Content: View>: View {
+struct EditField<Content: View>: View {
     let label: String
     var hint:  String? = nil
     @ViewBuilder var content: () -> Content
@@ -1228,7 +1410,11 @@ struct ClusterPulse: View {
                     isActive: app.activeSIDs.contains(cred.scriptID),
                     isUnhealthy: app.unhealthySIDs.contains(cred.scriptID),
                     isInCurrentPool: currentPoolIDs.contains(cred.scriptID),
-                    accent: cred.usesCloudflare ? .orange : .purple
+                    isStrategyPrimary: app.settings.isLBPulsePrimaryFocus(cred),
+                    accent: app.pulseAccent(for: cred),
+                    exitReady: cred.usesValTunnel
+                        && !app.settings.effectiveExitNodePool.isEmpty
+                        && app.exitCapableSIDs.contains(cred.scriptID)
                 )
             }
             if allEnabled.isEmpty {
@@ -1245,19 +1431,31 @@ struct PulseDot: View {
     let isActive: Bool
     let isUnhealthy: Bool
     var isInCurrentPool: Bool = true
+    /// Preferred tier for the current LB strategy (e.g. plain Apps Script under Apps Script First).
+    var isStrategyPrimary: Bool = true
     var accent: Color = .purple
+    /// True when val routing is active and this script reported exit-aware relay JSON.
+    var exitReady: Bool = false
 
     @State private var breathing = false
 
     private var dotColor: Color {
-        if isActive    { return accent }
+        if isActive {
+            return isStrategyPrimary ? accent : accent.opacity(0.45)
+        }
         if isUnhealthy { return Color.red.opacity(0.55) }
-        return isInCurrentPool ? Color.white.opacity(0.25) : Color.white.opacity(0.08)
+        let emphasized = isInCurrentPool && isStrategyPrimary
+        return emphasized ? Color.white.opacity(0.25) : Color.white.opacity(0.08)
+    }
+
+    private var dimmedInactive: Bool {
+        (!isInCurrentPool && !isActive)
+            || (isInCurrentPool && !isStrategyPrimary && !isActive)
     }
 
     var body: some View {
         ZStack {
-            if isActive {
+            if isActive, isStrategyPrimary {
                 Circle()
                     .fill(dotColor)
                     .frame(width: 16, height: 16)
@@ -1270,23 +1468,26 @@ struct PulseDot: View {
                 .frame(width: 8, height: 8)
                 .overlay(
                     Circle()
-                        .stroke(isActive ? Color.white.opacity(0.5) : Color.clear, lineWidth: 1)
+                        .stroke(isActive ? Color.white.opacity(isStrategyPrimary ? 0.5 : 0.35) : Color.clear, lineWidth: 1)
                 )
-                .scaleEffect(isActive ? 1.3 : 1.0)
-                .opacity(!isInCurrentPool && !isActive ? 0.4 : (isUnhealthy && !isActive ? 0.7 : 1.0))
+                .scaleEffect(isActive ? (isStrategyPrimary ? 1.3 : 1.08) : 1.0)
+                .opacity(dimmedInactive ? 0.4 : (isUnhealthy && !isActive ? 0.7 : 1.0))
         }
         .frame(width: 16, height: 16)
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isActive)
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isUnhealthy)
         .animation(.easeInOut(duration: 0.3), value: isInCurrentPool)
+        .animation(.easeInOut(duration: 0.3), value: isStrategyPrimary)
         .onAppear {
             withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
                 breathing = true
             }
         }
         .help(isUnhealthy
-              ? "Script \(sid.prefix(8))… — health check failed"
-              : "Script \(sid.prefix(8))…")
+              ? "Script \(sid.prefix(8))… health check failed"
+              : (exitReady
+                 ? "Script \(sid.prefix(8))… val tunnel active"
+                 : "Script \(sid.prefix(8))…"))
     }
 }
 
@@ -1295,6 +1496,7 @@ struct PulseDot: View {
 extension LBStrategy {
     /// Whether this strategy predominantly routes through Cloudflare (drives accent color).
     var cfFacing: Bool { self == .cfPreferred || self == .cfOnly }
+    var valFacing: Bool { self == .valPreferred || self == .valOnly }
 }
 
 // MARK: - Cloudflare badge / toggle / LB banner
@@ -1314,6 +1516,28 @@ struct CloudflareBadge: View {
             Capsule().fill(.orange.opacity(0.15))
                 .overlay(Capsule().stroke(.orange.opacity(0.35), lineWidth: 0.5))
         )
+        .fixedSize()
+    }
+}
+
+private struct TagChipIcon: View {
+    let icon: String
+    let tint: Color
+    let isEnabled: Bool
+
+    var body: some View {
+        Image(systemName: icon)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(isEnabled ? tint : .secondary.opacity(0.75))
+            .frame(width: 20, height: 20)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isEnabled ? tint.opacity(0.16) : .white.opacity(0.04))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(isEnabled ? tint.opacity(0.35) : .white.opacity(0.08), lineWidth: 0.8)
+                    )
+            )
     }
 }
 
@@ -1352,6 +1576,47 @@ struct CloudflareToggle: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(isOn ? .orange.opacity(0.3) : .white.opacity(0.06),
+                                lineWidth: 1)
+                )
+        )
+    }
+}
+
+struct ValTunnelToggle: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "arrow.turn.up.right")
+                .font(.system(size: 14))
+                .foregroundStyle(isOn ? .mint : .secondary)
+                .frame(width: 18, alignment: .center)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Use val exit relay")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("When Settings exit routing is on, relay JSON for this profile may include the val tunnel (`en`) for matching hosts. Turn off for profiles that should not use exit.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 6)
+
+            Toggle("", isOn: $isOn)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+                .tint(.mint)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isOn ? .mint.opacity(0.08) : .white.opacity(0.04))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(isOn ? .mint.opacity(0.3) : .white.opacity(0.06),
                                 lineWidth: 1)
                 )
         )
@@ -1429,7 +1694,11 @@ private struct StrategyIconToggle: View {
     let namespace: Namespace.ID
     let onSelect: () -> Void
 
-    private var accent: Color { strategy.cfFacing ? .orange : .purple }
+    private var accent: Color {
+        if strategy.cfFacing { return .orange }
+        if strategy.valFacing { return .mint }
+        return .purple
+    }
 
     var body: some View {
         Button(action: onSelect) {
@@ -1485,7 +1754,7 @@ struct LBFallbackBanner: View {
     }
 }
 
-private extension View {
+extension View {
     func editFieldStyle() -> some View {
         self
             .padding(.horizontal, 12)

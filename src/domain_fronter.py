@@ -131,7 +131,16 @@ class DomainFronter:
         self._script_is_cf = {
             c["id"]: bool(c.get("is_cf", False)) for c in self._script_configs
         }
-        
+        # Per-script exit relay: only attach "en" when the chosen script allows it.
+        # If "use_exit" is omitted (legacy configs), exit applies to all scripts.
+        self._script_use_exit: dict[str, bool] = {}
+        for c in self._script_configs:
+            cid = str(c.get("id") or "").strip()
+            if not cid:
+                continue
+            if "use_exit" in c:
+                self._script_use_exit[cid] = bool(c["use_exit"])
+
         self._script_idx = 0
         self.script_id = self._script_ids[0] if self._script_ids else "none"
         self._dev_available = False
@@ -150,6 +159,73 @@ class DomainFronter:
         self._stats_task: asyncio.Task | None = None
 
         self.auth_key = config.get("auth_key", "")
+        # Optional exit node (Apps Script → val.town → origin) for hosts that
+        # block Google datacenter IPs. See exit_node/readme.md.
+        raw_exit = config.get("exit_node")
+        self._exit_configs: list[dict[str, str]] = []
+        self._exit_cfg_idx = 0
+        if isinstance(raw_exit, dict):
+            self._exit_enabled = bool(raw_exit.get("enabled"))
+            mode = str(raw_exit.get("mode") or "selective").strip().lower()
+            self._exit_mode = mode if mode in ("selective", "full") else "selective"
+            hosts_raw = raw_exit.get("hosts")
+            if isinstance(hosts_raw, str):
+                self._exit_hosts = [
+                    h.strip().lower()
+                    for h in hosts_raw.replace(",", " ").split()
+                    if h.strip()
+                ]
+            elif isinstance(hosts_raw, (list, tuple)):
+                self._exit_hosts = [
+                    str(h).strip().lower()
+                    for h in hosts_raw
+                    if str(h).strip()
+                ]
+            else:
+                self._exit_hosts = []
+            relay_cfgs = raw_exit.get("relay_configs")
+            if isinstance(relay_cfgs, list):
+                for item in relay_cfgs:
+                    if not isinstance(item, dict):
+                        continue
+                    ru = str(item.get("relay_url") or "").strip()
+                    pk = str(item.get("psk") or "").strip()
+                    if ru.startswith(("http://", "https://")) and len(pk) >= 8:
+                        self._exit_configs.append({"relay_url": ru, "psk": pk})
+            if not self._exit_configs:
+                # Legacy single relay_url + psk
+                ru = str(raw_exit.get("relay_url") or "").strip()
+                pk = str(raw_exit.get("psk") or "").strip()
+                if ru.startswith(("http://", "https://")) and len(pk) >= 8:
+                    self._exit_configs.append({"relay_url": ru, "psk": pk})
+        else:
+            self._exit_enabled = False
+            self._exit_mode = "selective"
+            self._exit_hosts = []
+        self._exit_node_active = (
+            self._exit_enabled
+            and bool(self._exit_configs)
+            and (self._exit_mode == "full" or bool(self._exit_hosts))
+        )
+        if self._exit_enabled and not self._exit_node_active:
+            log.warning(
+                "exit_node is enabled but misconfigured "
+                "(need ≥1 relay with https? URL + PSK length ≥8, and hosts unless mode=full) — disabled",
+            )
+        elif self._exit_node_active:
+            log.info(
+                "Exit node active (%s, %d relay(s), %d host suffixes)",
+                self._exit_mode,
+                len(self._exit_configs),
+                len(self._exit_hosts) if self._exit_mode == "selective" else 0,
+            )
+            if len(self._exit_configs) > 1:
+                log.info(
+                    "Exit node load-balance: round-robin across %d relay URLs "
+                    "(per request that uses exit)",
+                    len(self._exit_configs),
+                )
+
         self.verify_ssl = config.get("verify_ssl", True)
         self._relay_timeout = self._cfg_float(
             config, "relay_timeout", RELAY_TIMEOUT, minimum=1.0,
@@ -862,7 +938,7 @@ class DomainFronter:
         """Probe every configured script_id once at startup.
 
         Emits machine-readable markers consumed by the macOS UI:
-            [HEALTH] sid=<id> ok=true
+            [HEALTH] sid=<id> ok=true cap=<n>
             [HEALTH] sid=<id> ok=false reason=<reason>
 
         Failing script IDs are blacklisted so the load balancer skips them.
@@ -944,7 +1020,9 @@ class DomainFronter:
             # follow-redirects). Anything 5xx from the target = chain broken.
             if upstream_status >= 500:
                 return sid, "bad", f"upstream {upstream_status}"
-            return sid, "ok", ""
+            cap_raw = data.get("cap")
+            cap_level = int(cap_raw) if isinstance(cap_raw, int) else 0
+            return sid, "ok", str(cap_level)
 
         # Serialize probes (with mild concurrency) so we don't trip the H2
         # max-concurrent-streams cap and then blame the scripts for it.
@@ -958,7 +1036,11 @@ class DomainFronter:
         for sid, verdict, reason in results:
             if verdict == "ok":
                 healthy += 1
-                log.info("[HEALTH] sid=%s ok=true", sid)
+                try:
+                    cap_level = max(0, int(reason)) if reason else 0
+                except ValueError:
+                    cap_level = 0
+                log.info("[HEALTH] sid=%s ok=true cap=%d", sid, cap_level)
             elif verdict == "bad":
                 # _blacklist_sid emits the [HEALTH] ok=false marker.
                 self._blacklist_sid(sid, reason=f"health: {reason}")
@@ -1631,6 +1713,31 @@ class DomainFronter:
         "proxy-connection",
     })
 
+    def _hostname_for_exit_match(self, url: str) -> str:
+        try:
+            host = (urlparse(url).hostname or "").lower()
+            return host[:-1] if host.endswith(".") else host
+        except Exception:
+            return ""
+
+    def _url_uses_exit_node(self, url: str) -> bool:
+        if not self._exit_node_active:
+            return False
+        if self._exit_mode == "full":
+            return True
+        host = self._hostname_for_exit_match(url)
+        if not host:
+            return False
+        for pat in self._exit_hosts:
+            if host == pat or host.endswith("." + pat):
+                return True
+        return False
+
+    def _script_allows_exit(self, sid: str) -> bool:
+        if sid in self._script_use_exit:
+            return self._script_use_exit[sid]
+        return True
+
     def _build_payload(self, method, url, headers, body):
         """Build the JSON relay payload dict."""
         payload = {
@@ -1649,7 +1756,24 @@ class DomainFronter:
             ct = headers.get("Content-Type") or headers.get("content-type")
             if ct:
                 payload["ct"] = ct
+        if self._url_uses_exit_node(url):
+            sid = self._script_id_for_key(self._host_key(url))
+            if self._script_allows_exit(sid):
+                cfg = self._next_exit_config()
+                if cfg:
+                    payload["en"] = {
+                        "relay_url": cfg["relay_url"],
+                        "psk": cfg["psk"],
+                    }
+                    log.debug("Relay via exit node: %s", url[:80])
         return payload
+
+    def _next_exit_config(self) -> dict[str, str] | None:
+        if not self._exit_configs:
+            return None
+        i = self._exit_cfg_idx % len(self._exit_configs)
+        self._exit_cfg_idx += 1
+        return self._exit_configs[i]
 
     @classmethod
     def _is_static_asset_url(cls, url: str) -> bool:
@@ -2285,6 +2409,7 @@ class DomainFronter:
 
     def _parse_relay_json(self, data: dict) -> bytes:
         """Convert a parsed relay JSON dict to raw HTTP response bytes."""
+        data.pop("cap", None)
         if "e" in data:
             return self._error_response(502, f"Relay error: {data['e']}")
 

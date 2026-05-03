@@ -1,11 +1,20 @@
 import SwiftUI
 
+private enum ExitNodeBlockHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 struct SettingsView: View {
     @EnvironmentObject var app: AppState
     @State private var draft: AppSettings = .default
     @State private var saved = false
     @State private var isRepairingCert = false
     @State private var certRepairStatus = ""
+    /// Matches stacked right column height to measured Exit node column (no dead zone under short cards).
+    @State private var exitNodeBlockHeight: CGFloat = 0
 
     var body: some View {
         ScrollView {
@@ -16,12 +25,24 @@ struct SettingsView: View {
                 
                 frontingSection
 
-                HStack(alignment: .top, spacing: 20) {
-                    advancedSection
-                    // Load balancing moved to Dashboard
-                }
+                googleIPScannerSection
 
-                certificateSection
+                HStack(alignment: .top, spacing: 14) {
+                    exitNodeSection
+                        .frame(minWidth: 0, maxWidth: .infinity)
+                        .background(
+                            GeometryReader { geometry in
+                                Color.clear.preference(
+                                    key: ExitNodeBlockHeightKey.self,
+                                    value: geometry.size.height
+                                )
+                            }
+                        )
+
+                    rightSettingsColumn
+                        .frame(minWidth: 0, maxWidth: .infinity)
+                }
+                .onPreferenceChange(ExitNodeBlockHeightKey.self) { exitNodeBlockHeight = $0 }
 
                 footer
             }
@@ -83,8 +104,42 @@ struct SettingsView: View {
         }
     }
 
+    private var googleIPScannerSection: some View {
+        GoogleIPScannerCard()
+    }
+
+    private var exitNodeSection: some View {
+        SettingsCard(title: "Exit node", icon: "arrow.turn.up.right") {
+            ExitNodeSettingsPanel(settings: $draft)
+        }
+    }
+
+    /// Advanced + TLS: equal height when the Exit node column height is known; shared column matches left.
+    @ViewBuilder
+    private var rightSettingsColumn: some View {
+        let pair = VStack(spacing: 14) {
+            advancedSection
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            certificateSection
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+
+        if exitNodeBlockHeight > 1 {
+            pair
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: exitNodeBlockHeight,
+                    maxHeight: exitNodeBlockHeight,
+                    alignment: .top
+                )
+        } else {
+            pair
+        }
+    }
+
     private var advancedSection: some View {
-        SettingsCard(title: "Advanced", icon: "slider.horizontal.3") {
+        SettingsCard(title: "Advanced", icon: "slider.horizontal.3", expandToFitParent: true) {
             VStack(spacing: 12) {
                 HStack {
                     Text("Log Level")
@@ -114,9 +169,8 @@ struct SettingsView: View {
                         .controlSize(.mini)
                 }
             }
-            .frame(maxHeight: .infinity, alignment: .top)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
-        .frame(maxWidth: .infinity, minHeight: 140)
     }
 
     private var loadBalancingSection: some View {
@@ -164,9 +218,9 @@ struct SettingsView: View {
     }
 
     private var certificateSection: some View {
-        SettingsCard(title: "TLS / Certificate", icon: "cross.case") {
+        SettingsCard(title: "TLS / Certificate", icon: "cross.case", expandToFitParent: true) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("If sites fail with SSL errors, use this to refresh the MITM certificate.")
+                Text("If sites show SSL errors, refresh the MITM certificate here.")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -199,6 +253,7 @@ struct SettingsView: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .top)
         }
     }
 
@@ -235,6 +290,9 @@ struct SettingsView: View {
         var s = draft
         // activeCredentialID is managed by the picker on Dashboard/DashboardView
         s.activeCredentialID = app.settings.activeCredentialID
+        if !s.exitRoutingAllowed {
+            s.valRelayEnabled = false
+        }
         return s
     }
 
@@ -242,7 +300,10 @@ struct SettingsView: View {
         var merged = draft
         // Preserve activeCredentialID which is managed elsewhere
         merged.activeCredentialID = app.settings.activeCredentialID
-        
+        if !merged.exitRoutingAllowed {
+            merged.valRelayEnabled = false
+        }
+
         app.settings = merged
         app.saveSettings()
         withAnimation { saved = true }
@@ -265,15 +326,30 @@ struct SettingsView: View {
 private struct SettingsCard<Content: View>: View {
     let title: String
     let icon:  String
+    /// When true, card fills vertical space from parent (paired tiles stay equal height).
+    var expandToFitParent: Bool = false
     @ViewBuilder var content: () -> Content
 
     var body: some View {
         Card {
-            VStack(alignment: .leading, spacing: 12) {
-                Label(title, systemImage: icon)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                content()
+            Group {
+                if expandToFitParent {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label(title, systemImage: icon)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        content()
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                } else {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label(title, systemImage: icon)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        content()
+                    }
+                }
             }
         }
     }

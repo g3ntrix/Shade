@@ -84,5 +84,22 @@
 		"safebrowsing.google.com"
 	],
 	"youtube_via_relay": false,
+	"exit_node": {
+		"enabled": false,
+		"mode": "selective",
+		"relay_configs": [
+			{
+				"relay_url": "https://your-handle.web.val.run",
+				"psk": "CHANGE_ME_TO_A_STRONG_SECRET"
+			}
+		],
+		"hosts": [
+			"chatgpt.com",
+			"openai.com",
+			"claude.ai",
+			"x.com",
+			"grok.com"
+		]
+	},
 	"hosts": {}
 }

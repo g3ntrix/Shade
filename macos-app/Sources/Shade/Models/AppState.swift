@@ -43,6 +43,9 @@ final class AppState: ObservableObject {
     /// Scripts that failed the startup health probe. Cleared on every start.
     @Published var unhealthySIDs: Set<String> = []
 
+    /// Scripts whose relay JSON included `cap` ≥ 2 (exit-aware Code.gs), from startup health logs.
+    @Published var exitCapableSIDs: Set<String> = []
+
     /// Populated by the health monitor when a "preferred" strategy triggers
     /// an automatic restart on the fallback pool.
     @Published var lbFallbackMessage: String? = nil
@@ -70,6 +73,16 @@ final class AppState: ObservableObject {
             case .failure(let msg): return msg
             }
         }
+    }
+
+    @Published var proxyEgressIP: ProxyIPState = .idle
+    @Published var isCheckingProxyEgressIP: Bool = false
+
+    enum ProxyIPState: Equatable {
+        case idle
+        case success(String)
+        case failure(String)
+        case unavailable(String)
     }
 
     // MARK: - Traffic stats
@@ -165,16 +178,34 @@ final class AppState: ObservableObject {
         let cleanText = text.replacingOccurrences(of: "\\e\\[[0-9;]*[mK]", with: "", options: .regularExpression)
             .replacingOccurrences(of: "\u{1b}\\[[0-9;]*[mK]", with: "", options: .regularExpression)
 
-        // Health probe results: [HEALTH] sid=<id> ok=true|false reason=...
-        if let range = cleanText.range(of: "[HEALTH] sid=") {
-            let tail = cleanText[range.upperBound...]
-            let sid = String(tail.prefix(while: { !$0.isWhitespace }))
-            let ok = tail.contains("ok=true")
+        // Health probe: [HEALTH] sid=<id> ok=true cap=<n> | ok=false reason=...
+        if cleanText.contains("[HEALTH] sid=") {
+            let tailFromSid: String = {
+                guard let r = cleanText.range(of: "[HEALTH] sid=") else { return "" }
+                return String(cleanText[r.upperBound...])
+            }()
+            let sid = String(tailFromSid.prefix(while: { !$0.isWhitespace && $0 != "\n" }))
+            let ok = cleanText.contains("ok=true")
+            var capLevel = 0
+            if let capR = cleanText.range(of: "cap=") {
+                let after = cleanText[capR.upperBound...]
+                let digits = after.prefix(while: { $0.isNumber })
+                capLevel = Int(digits) ?? 0
+            }
             if !sid.isEmpty {
                 for cred in settings.credentials
                 where cred.scriptID.hasSuffix(sid) || sid.hasSuffix(cred.scriptID) {
-                    if ok { unhealthySIDs.remove(cred.scriptID) }
-                    else  { unhealthySIDs.insert(cred.scriptID) }
+                    if ok {
+                        unhealthySIDs.remove(cred.scriptID)
+                        if capLevel >= 2 {
+                            exitCapableSIDs.insert(cred.scriptID)
+                        } else {
+                            exitCapableSIDs.remove(cred.scriptID)
+                        }
+                    } else {
+                        unhealthySIDs.insert(cred.scriptID)
+                        exitCapableSIDs.remove(cred.scriptID)
+                    }
                 }
             }
         }
@@ -204,6 +235,18 @@ final class AppState: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Accent: mint when this profile uses val exit, routing is on, and the deployment reported exit-aware relay JSON (`cap` ≥ 2).
+    func pulseAccent(for credential: Credential) -> Color {
+        if credential.usesValTunnel,
+           !settings.effectiveExitNodePool.isEmpty,
+           exitCapableSIDs.contains(credential.scriptID) {
+            return .mint
+        }
+        if credential.usesCloudflare { return .orange }
+        if credential.usesValTunnel { return .mint }
+        return .purple
     }
 
     private func decayHits() {
@@ -254,6 +297,7 @@ final class AppState: ObservableObject {
         status = .starting
         startedAt = Date()
         unhealthySIDs.removeAll()
+        exitCapableSIDs.removeAll()
         do {
             // ── Certificate install (sync) ──────────────────────────────
             // We do this before starting the core so that:
@@ -337,6 +381,8 @@ final class AppState: ObservableObject {
         let enabled    = settings.credentials.filter { $0.isEnabledForLB }
         let cfPool     = enabled.filter { $0.usesCloudflare }
         let normalPool = enabled.filter { !$0.usesCloudflare }
+        let valPool    = enabled.filter { $0.usesValTunnel }
+        let nonValPool = enabled.filter { !$0.usesValTunnel }
 
         let shouldFallback: Bool
         let message: String
@@ -352,6 +398,11 @@ final class AppState: ObservableObject {
                 && normalPool.allSatisfy { unhealthySIDs.contains($0.scriptID) }
             shouldFallback = allNormalDead && !cfPool.isEmpty
             message = "All Apps Script profiles failed. Falling back to Cloudflare profiles. Restart to try Apps Script again."
+        case .valPreferred:
+            let allValDead = !valPool.isEmpty
+                && valPool.allSatisfy { unhealthySIDs.contains($0.scriptID) }
+            shouldFallback = allValDead && !nonValPool.isEmpty
+            message = "All val-tagged profiles failed. Falling back to non-val profiles. Restart to try val profiles again."
         default:
             return
         }
@@ -561,6 +612,62 @@ final class AppState: ObservableObject {
                 return .failure(Self.shorten(error.localizedDescription))
             }
         }.value
+    }
+
+    func checkProxyEgressIP() async {
+        guard !isCheckingProxyEgressIP else { return }
+        guard status.isRunning else {
+            proxyEgressIP = .unavailable("Start Shade first")
+            return
+        }
+        isCheckingProxyEgressIP = true
+        proxyEgressIP = .idle
+        let host = settings.listenHost == "0.0.0.0" ? "127.0.0.1" : settings.listenHost
+        let httpPort = activeHTTPPort > 0 ? activeHTTPPort : settings.listenPort
+        let socksPort = activeSOCKSPort > 0 ? activeSOCKSPort : settings.socksPort
+
+        do {
+            let ip = try await fetchIPThroughProxy(host: host, httpPort: httpPort, socksPort: socksPort)
+            proxyEgressIP = .success(ip)
+        } catch {
+            proxyEgressIP = .failure(Self.shorten(error.localizedDescription))
+        }
+        isCheckingProxyEgressIP = false
+    }
+
+    private func fetchIPThroughProxy(host: String, httpPort: Int, socksPort: Int) async throws -> String {
+        let url = URL(string: "https://api.ipify.org?format=json")!
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        request.httpMethod = "GET"
+
+        let config = URLSessionConfiguration.ephemeral
+        config.connectionProxyDictionary = [
+            "HTTPEnable": true,
+            "HTTPProxy": host,
+            "HTTPPort": httpPort,
+            "HTTPSEnable": true,
+            "HTTPSProxy": host,
+            "HTTPSPort": httpPort,
+            "SOCKSEnable": true,
+            "SOCKSProxy":  host,
+            "SOCKSPort":   socksPort,
+        ]
+        config.timeoutIntervalForRequest = 20
+        let session = URLSession(configuration: config)
+        let (data, _) = try await session.data(for: request)
+
+        if let json = try? JSONSerialization.jsonObject(with: data, options: []),
+           let dict = json as? [String: Any],
+           let ip = dict["ip"] as? String,
+           !ip.isEmpty {
+            return ip
+        }
+        let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.range(of: #"^(\d{1,3}\.){3}\d{1,3}$"#, options: .regularExpression) != nil
+            || text.contains(":") {
+            return text
+        }
+        throw NSError(domain: "Shade", code: 7, userInfo: [NSLocalizedDescriptionKey: "Could not parse IP"])
     }
 
     private nonisolated static func shorten(_ message: String) -> String {

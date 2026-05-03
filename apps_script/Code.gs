@@ -29,6 +29,52 @@ const SKIP_HEADERS = {
 // If fetchAll fails, only retry methods that are safe to replay.
 const SAFE_REPLAY_METHODS = { GET: 1, HEAD: 1, OPTIONS: 1 };
 
+/**
+ * Second hop: POST to exit node (e.g. val.town) with the same shape it expects
+ * ({k, u, m, h, b}). On failure, caller falls back to direct fetch.
+ */
+function _fetchViaExitNode(req) {
+  try {
+    var en = req.en;
+    if (!en || typeof en !== "object") return null;
+    var relayUrl = en.relay_url;
+    var exitPsk = en.psk;
+    if (
+      !relayUrl ||
+      typeof relayUrl !== "string" ||
+      !relayUrl.match(/^https?:\/\//i) ||
+      !exitPsk ||
+      typeof exitPsk !== "string"
+    ) {
+      return null;
+    }
+    var inner = {
+      k: exitPsk,
+      u: req.u,
+      m: (req.m || "GET").toUpperCase(),
+    };
+    if (req.h && typeof req.h === "object") inner.h = req.h;
+    if (req.b) inner.b = req.b;
+
+    var resp = UrlFetchApp.fetch(relayUrl, {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(inner),
+      muteHttpExceptions: true,
+      followRedirects: true,
+    });
+    var text = resp.getContentText();
+    var data = JSON.parse(text);
+    if (data.e) return null;
+    if (typeof data.s !== "number") return null;
+    if (!data.h || typeof data.h !== "object") return null;
+    if (typeof data.b !== "string") return null;
+    return data;
+  } catch (err) {
+    return null;
+  }
+}
+
 function doPost(e) {
   try {
     var req = JSON.parse(e.postData.contents);
@@ -48,6 +94,16 @@ function _doSingle(req) {
   if (!req.u || typeof req.u !== "string" || !req.u.match(/^https?:\/\//i)) {
     return _json({ e: "bad url" });
   }
+  if (req.en && req.en.relay_url && req.en.psk) {
+    var viaExit = _fetchViaExitNode(req);
+    if (viaExit) {
+      return _json({
+        s: viaExit.s,
+        h: viaExit.h,
+        b: viaExit.b,
+      });
+    }
+  }
   var opts = _buildOpts(req);
   var resp = UrlFetchApp.fetch(req.u, opts);
   return _json({
@@ -58,20 +114,33 @@ function _doSingle(req) {
 }
 
 function _doBatch(items) {
+  var results = new Array(items.length);
   var fetchArgs = [];
   var fetchIndex = [];
   var fetchMethods = [];
-  var errorMap = {};
+  var i;
+  var j;
 
-  for (var i = 0; i < items.length; i++) {
+  for (i = 0; i < items.length; i++) {
     var item = items[i];
     if (!item || typeof item !== "object") {
-      errorMap[i] = "bad item";
+      results[i] = { e: "bad item" };
       continue;
     }
     if (!item.u || typeof item.u !== "string" || !item.u.match(/^https?:\/\//i)) {
-      errorMap[i] = "bad url";
+      results[i] = { e: "bad url" };
       continue;
+    }
+    if (item.en && item.en.relay_url && item.en.psk) {
+      var viaExit = _fetchViaExitNode(item);
+      if (viaExit) {
+        results[i] = {
+          s: viaExit.s,
+          h: viaExit.h,
+          b: viaExit.b,
+        };
+        continue;
+      }
     }
     try {
       var opts = _buildOpts(item);
@@ -79,24 +148,24 @@ function _doBatch(items) {
       fetchArgs.push(opts);
       fetchIndex.push(i);
       fetchMethods.push(String(item.m || "GET").toUpperCase());
+      results[i] = null;
     } catch (err) {
-      errorMap[i] = String(err);
+      results[i] = { e: String(err) };
     }
   }
 
-  // fetchAll() processes all requests in parallel inside Google
   var responses = [];
   if (fetchArgs.length > 0) {
     try {
       responses = UrlFetchApp.fetchAll(fetchArgs);
     } catch (err) {
-      // If fetchAll fails as a whole, degrade to per-item fetch so one bad
-      // request does not poison the full batch.
       responses = [];
-      for (var j = 0; j < fetchArgs.length; j++) {
+      for (j = 0; j < fetchArgs.length; j++) {
         try {
           if (!SAFE_REPLAY_METHODS[fetchMethods[j]]) {
-            errorMap[fetchIndex[j]] = "batch fetchAll failed; unsafe method not replayed";
+            results[fetchIndex[j]] = {
+              e: "batch fetchAll failed; unsafe method not replayed",
+            };
             responses[j] = null;
             continue;
           }
@@ -110,29 +179,25 @@ function _doBatch(items) {
           }
           responses[j] = UrlFetchApp.fetch(fallbackUrl, fallbackOpts);
         } catch (singleErr) {
-          errorMap[fetchIndex[j]] = String(singleErr);
+          results[fetchIndex[j]] = { e: String(singleErr) };
           responses[j] = null;
         }
       }
     }
   }
 
-  var results = [];
   var rIdx = 0;
-  for (var i = 0; i < items.length; i++) {
-    if (Object.prototype.hasOwnProperty.call(errorMap, i)) {
-      results.push({ e: errorMap[i] });
+  for (i = 0; i < items.length; i++) {
+    if (results[i] !== null) continue;
+    var resp = responses[rIdx++];
+    if (!resp) {
+      if (!results[i]) results[i] = { e: "fetch failed" };
     } else {
-      var resp = responses[rIdx++];
-      if (!resp) {
-        results.push({ e: "fetch failed" });
-      } else {
-        results.push({
-          s: resp.getResponseCode(),
-          h: _respHeaders(resp),
-          b: Utilities.base64Encode(resp.getContent()),
-        });
-      }
+      results[i] = {
+        s: resp.getResponseCode(),
+        h: _respHeaders(resp),
+        b: Utilities.base64Encode(resp.getContent()),
+      };
     }
   }
   return _json({ q: results });
@@ -181,7 +246,16 @@ function doGet(e) {
 }
 
 function _json(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(
+  var out = {};
+  if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+    for (var k in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, k)) {
+        out[k] = obj[k];
+      }
+    }
+  }
+  out.cap = 2;
+  return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(
     ContentService.MimeType.JSON
   );
 }
