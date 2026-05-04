@@ -46,7 +46,7 @@ export default async function (req: Request): Promise<Response> {
       {
         e:
           "exit_node misconfigured: PSK is still the placeholder. Set " +
-          "a strong secret in the val.town source before deploying.",
+          "a strong secret in the relay source before deploying.",
       },
       { status: 503 },
     );

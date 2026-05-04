@@ -142,6 +142,8 @@ private struct CredentialsCard: View {
     @State private var editTarget: Credential? = nil
 
     private var active: Credential? { app.settings.activeCredential }
+    private var lbEnabled: Bool { app.settings.enableLoadBalancing }
+    private var lbPoolCount: Int { app.settings.effectiveLBPool.count }
 
     var body: some View {
         Card {
@@ -237,17 +239,21 @@ private struct CredentialsCard: View {
                         HStack(spacing: 10) {
                             VStack(alignment: .leading, spacing: 3) {
                                 HStack(spacing: 6) {
-                                    Text(active?.name ?? "No profile selected")
+                                    Text(lbEnabled ? "Load-balanced pool" : (active?.name ?? "No profile selected"))
                                         .font(.system(size: 13, weight: .semibold))
                                         .foregroundStyle(.primary)
-                                    if active?.usesCloudflare == true {
+                                    if !lbEnabled && active?.usesCloudflare == true {
                                         CloudflareBadge()
                                     }
-                                    if active?.usesValTunnel == true {
+                                    if !lbEnabled && active?.usesValTunnel == true {
                                         ValBadge()
                                     }
                                 }
-                                if let cred = active, !cred.scriptID.isEmpty {
+                                if lbEnabled {
+                                    Text("\(lbPoolCount) profile(s) in current strategy pool")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.secondary)
+                                } else if let cred = active, !cred.scriptID.isEmpty {
                                     Text(cred.scriptID.count > 28
                                          ? String(cred.scriptID.prefix(28)) + "…"
                                          : cred.scriptID)
@@ -517,7 +523,7 @@ private struct CredentialRow: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .help(credential.usesValTunnel ? "Remove val tag" : "Assign val tag")
+                .help(credential.usesValTunnel ? "Remove exit tag" : "Assign exit tag")
             }
 
             Button(action: onEdit) {
@@ -1480,7 +1486,7 @@ struct PulseDot: View {
         .help(isUnhealthy
               ? "Script \(sid.prefix(8))… health check failed"
               : (exitReady
-                 ? "Script \(sid.prefix(8))… val tunnel active"
+                 ? "Script \(sid.prefix(8))… exit relay active"
                  : "Script \(sid.prefix(8))…"))
     }
 }
@@ -1491,6 +1497,18 @@ extension LBStrategy {
     /// Whether this strategy predominantly routes through Cloudflare (drives accent color).
     var cfFacing: Bool { self == .cfPreferred || self == .cfOnly }
     var valFacing: Bool { self == .valPreferred || self == .valOnly }
+    /// Visual ordering in the strategy picker: broad/default first, then preferred, then strict-only.
+    static var displayOrder: [LBStrategy] {
+        [
+            .balanced,
+            .normalPreferred,
+            .cfPreferred,
+            .valPreferred,
+            .normalOnly,
+            .cfOnly,
+            .valOnly,
+        ]
+    }
 }
 
 // MARK: - Cloudflare badge / toggle / LB banner
@@ -1588,9 +1606,9 @@ struct ValTunnelToggle: View {
                 .padding(.top, 1)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Use val exit relay")
+                Text("Use exit relay")
                     .font(.system(size: 11, weight: .semibold))
-                Text("When Settings exit routing is on, relay JSON for this profile may include the val tunnel (`en`) for matching hosts. Turn off for profiles that should not use exit.")
+                Text("When Settings exit routing is on, relay JSON for this profile may include exit relay settings (`en`) for matching hosts. Turn off for profiles that should not use exit.")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1626,7 +1644,7 @@ private struct PremiumStrategyPicker: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            ForEach(LBStrategy.allCases) { strategy in
+            ForEach(LBStrategy.displayOrder) { strategy in
                 StrategyIconToggle(
                     strategy: strategy,
                     isSelected: app.settings.lbStrategy == strategy,

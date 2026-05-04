@@ -43,7 +43,7 @@ struct Credential: Codable, Equatable, Identifiable {
 
 // MARK: - ExitNodeProfile
 
-/// One HTTP exit relay (e.g. val.town). Apps Script POSTs here for matching hosts.
+/// One HTTP exit relay (hosted service or self-hosted tools/vps-exit-worker). Apps Script POSTs here for matching hosts.
 struct ExitNodeProfile: Codable, Equatable, Identifiable {
     var id: UUID
     var name: String
@@ -54,7 +54,7 @@ struct ExitNodeProfile: Codable, Equatable, Identifiable {
 
     init(
         id: UUID = UUID(),
-        name: String = "Val tunnel",
+        name: String = "Exit relay",
         relayURL: String = "",
         psk: String = "",
         isEnabledForLB: Bool = true
@@ -127,8 +127,8 @@ enum LBStrategy: String, Codable, CaseIterable, Identifiable {
         case .normalPreferred: return "Apps Script First"
         case .cfOnly:          return "Cloudflare Only"
         case .normalOnly:      return "Apps Script Only"
-        case .valPreferred:    return "Val First"
-        case .valOnly:         return "Val Only"
+        case .valPreferred:    return "Exit First"
+        case .valOnly:         return "Exit Only"
         }
     }
 
@@ -146,9 +146,9 @@ enum LBStrategy: String, Codable, CaseIterable, Identifiable {
         case .normalOnly:
             return "Apps Script profiles only."
         case .valPreferred:
-            return "Use val-tagged profiles first; fall back to others if all val profiles fail."
+            return "Use exit-enabled profiles first; fall back to others if all exit-enabled profiles fail."
         case .valOnly:
-            return "Profiles tagged with val only."
+            return "Profiles tagged for exit relay only."
         }
     }
 
@@ -205,8 +205,8 @@ struct AppSettings: Codable, Equatable {
     var enableAppLogs: Bool = false
     var youtubeViaRelay: Bool = false
 
-    // ── Exit node (Apps Script → val.town → origin) ───────────────────────
-    /// Settings: allow val tunnels; when off the core omits exit_node and val controls are disabled.
+    // ── Exit node (Apps Script → exit relay → origin) ───────────────────────
+    /// Settings: allow exit relays; when off the core omits exit_node and related controls are disabled.
     var exitRoutingAllowed: Bool = false
     /// Dashboard: actually route matching traffic through configured tunnels (default off).
     var valRelayEnabled: Bool = false
@@ -301,7 +301,7 @@ struct AppSettings: Codable, Equatable {
             let legacyURL = (try? c.decode(String.self, forKey: .legacyExitRelayURL)) ?? ""
             let legacyPSK = (try? c.decode(String.self, forKey: .legacyExitPSK)) ?? ""
             if !legacyURL.isEmpty || !legacyPSK.isEmpty {
-                let p = ExitNodeProfile(name: "Val 1", relayURL: legacyURL, psk: legacyPSK)
+                let p = ExitNodeProfile(name: "Exit 1", relayURL: legacyURL, psk: legacyPSK)
                 exitNodeProfiles = [p]
                 if activeExitNodeProfileID == nil { activeExitNodeProfileID = p.id }
             }
@@ -368,7 +368,7 @@ struct AppSettings: Codable, Equatable {
         case .cfOnly:
             return cfPool
         case .normalOnly:
-            return normalPool
+            return normalPool.filter { !$0.usesValTunnel }
         case .cfPreferred:
             if lbFallbackActive { return enabled }          // fell back → use all
             return cfPool.isEmpty ? normalPool : cfPool     // primary pool

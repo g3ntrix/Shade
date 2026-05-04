@@ -48,3 +48,12 @@ macos-app/scripts/
 project with cloudflare/
 macos-app/logo/shade copy.png
 exit_node
+
+# Local test/reference artifacts
+test-output/
+test-results/
+reference/
+references/
+*.reference
+*.golden
+*.snapshot

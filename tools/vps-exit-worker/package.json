@@ -1,0 +1,9 @@
+{
+  "name": "shade-vps-exit-worker",
+  "version": "1.0.0",
+  "description": "Node relay for Shade exit node (PSK) + legacy mhr-vps-worker mode",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

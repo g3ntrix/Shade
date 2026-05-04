@@ -404,7 +404,7 @@ final class AppState: ObservableObject {
             let allValDead = !valPool.isEmpty
                 && valPool.allSatisfy { unhealthySIDs.contains($0.scriptID) }
             shouldFallback = allValDead && !nonValPool.isEmpty
-            message = "All val-tagged profiles failed. Falling back to non-val profiles. Restart to try val profiles again."
+            message = "All exit-tagged profiles failed. Falling back to non-exit profiles. Restart to try exit profiles again."
         default:
             return
         }

@@ -1,9 +1,9 @@
 import SwiftUI
 import AppKit
 
-/// Top-level setup wizard: Apps Script only, Cloudflare Worker, or val.town exit relay.
+/// Top-level setup wizard: Apps Script, Cloudflare Worker, and Exit Relay (VPS).
 struct SetupView: View {
-    enum Mode { case chooser, appsScript, cloudflare, exitNode }
+    enum Mode { case chooser, appsScript, cloudflare, exitRelay }
     @State private var mode: Mode = .chooser
 
     var body: some View {
@@ -20,8 +20,8 @@ struct SetupView: View {
             CloudflareSetupView(onBack: {
                 withAnimation(.easeOut(duration: 0.2)) { mode = .chooser }
             })
-        case .exitNode:
-            ExitNodeSetupView(onBack: {
+        case .exitRelay:
+            VPSExitNodeSetupView(onBack: {
                 withAnimation(.easeOut(duration: 0.2)) { mode = .chooser }
             })
         }
@@ -40,7 +40,7 @@ private struct SetupChooserView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Setup Guide")
                         .font(.system(size: 28, weight: .bold, design: .rounded))
-                    Text("Pick your main relay path. You can add val.town exit tunnels anytime under Settings → Exit node.")
+                    Text("Pick your main relay path. Exit Relay is provider-agnostic and works with your own VPS.")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -52,7 +52,7 @@ private struct SetupChooserView: View {
                         subtitle: "Simplest, 5 steps",
                         details: "Relay on Google Apps Script only. Traffic exits from Google IPs.",
                         icon: "doc.text.fill",
-                        accent: .accentColor
+                        accent: .purple
                     ) {
                         onPick(.appsScript)
                     }
@@ -68,13 +68,13 @@ private struct SetupChooserView: View {
                     }
 
                     ChooserCard(
-                        title: "Exit node (val.town)",
-                        subtitle: "Optional, 6 steps",
-                        details: "Extra HTTP hop (e.g. val.town) for sites that block Google IPs. Add tunnels under Settings → Exit node.",
-                        icon: "arrow.turn.up.right",
-                        accent: .mint
+                        title: "Exit Relay",
+                        subtitle: "Optional, VPS package guide",
+                        details: "Build a ready-to-upload package, run copy-paste install commands on your VPS, then add Relay URL + PSK in Settings → Exit node.",
+                        icon: "server.rack",
+                        accent: .teal
                     ) {
-                        onPick(.exitNode)
+                        onPick(.exitRelay)
                     }
                 }
             }
@@ -158,7 +158,7 @@ private struct AppsScriptSetupView: View {
     @State private var authKeyDraft: String = ""
     @State private var authKeyConfirmed: Bool = false
 
-    private let accent: Color = .accentColor
+    private let accent: Color = .purple
 
     private let steps: [WizardStep] = [
         .init(
@@ -180,7 +180,7 @@ private struct AppsScriptSetupView: View {
                 Shade as your Auth Key. Save with ⌘S.
 
                 This version can optionally send some requests through an exit relay \
-                (val.town, etc.): add tunnels under Settings → Exit node; host list \
+                (hosted relay, VPS, etc.): add tunnels under Settings → Exit node; host list \
                 and mode live in Settings → Exit node. The exit PSK and AUTH_KEY are \
                 two different secrets.
                 """,
@@ -524,70 +524,70 @@ private struct CloudflareSetupView: View {
     }
 }
 
-// MARK: - Exit node (val.town) branch
+// MARK: - Exit relay (self-hosted VPS)
 
-private struct ExitNodeSetupView: View {
+private struct VPSExitNodeSetupView: View {
     let onBack: () -> Void
     @State private var step: Int = 0
-    @State private var pskDraft: String = ""
-    @State private var pskConfirmed: Bool = false
+    @State private var bundleURL: URL? = nil
+    @State private var instructionsURL: URL? = nil
+    @State private var isBuilding = false
+    @State private var buildError: String? = nil
+    @State private var serverIP: String = ""
+    @State private var exportInstructions = true
 
-    private let accent: Color = .mint
+    private let accent: Color = .teal
 
     private let steps: [WizardStep] = [
         .init(
             title: "What this does",
             body:
                 """
-                Some sites dislike Google’s outbound IP. Shade can send matching \
-                requests through a small relay on val.town so the site sees val’s IP.
+                Shade can package the Exit Relay for you in one click. You upload one file,
+                run one install command on the VPS, and the installer prints Relay URL + PSK.
 
-                You still need an Apps Script or Cloudflare profile. This guide \
-                only deploys the val relay; paste URL + PSK under Settings → Exit node.
+                No manual editing of server.js or ecosystem files is required.
                 """
         ),
         .init(
-            title: "Open val.town and sign up",
+            title: "Create bundle on this Mac",
             body:
                 """
-                Open val.town in your browser. Create an account if you don’t already \
-                have one (free tier is fine).
-                """,
-            link: URL(string: "https://www.val.town")
-        ),
-        .init(
-            title: "Choose PSK and copy the script",
-            body:
-                """
-                Pick a secret (≥ 8 chars). It is only for the val endpoint, not your \
-                Apps Script AUTH_KEY. Use This Key — you will paste the generated script \
-                into main.ts in the next step.
-                """,
-            showAuthKey: true
-        ),
-        .init(
-            title: "main.ts, Save, trigger, copy URL",
-            body:
-                """
-                Create or open an HTTP val (TypeScript). The editor opens main.ts \
-                by default — paste the full script there (replace what’s there) and Save.
+                Click Create Exit Relay Bundle. Shade will generate:
+                - a .tgz bundle to upload to your VPS
+                - a setup .txt guide next to that bundle
 
-                Then click Add trigger → Respond to web requests. Copy the HTTP \
-                endpoint URL val shows there — that is your Relay URL in Shade (opening \
-                it in a browser may show method_not_allowed; POST from Apps Script is normal).
+                Then Shade opens Finder on the generated files.
                 """
         ),
         .init(
-            title: "Wire it into Shade",
+            title: "Upload bundle to VPS",
             body:
                 """
-                1. Redeploy Code.gs from the Apps Script or Cloudflare guide here if you have not already.
+                Copy-paste the upload command below. It sends the bundle to /root on your VPS.
+                """
+        ),
+        .init(
+            title: "One-command install on VPS",
+            body:
+                """
+                Copy-paste the install command below. The installer automatically:
+                - installs Node.js and PM2 if needed
+                - picks a free relay port (starts at 18081)
+                - generates a strong PSK
+                - starts and persists the service with PM2
+                - prints Relay URL and Exit PSK
+                """
+        ),
+        .init(
+            title: "Use output in Shade",
+            body:
+                """
+                In Shade: Settings -> Exit node -> +
+                - Relay URL: paste installer output
+                - PSK: paste installer output
 
-                2. Settings → Exit node → + : paste Relay URL and the same PSK.
-
-                3. Turn on Allow val tunnel and Route through val. Stop → Start Shade.
-
-                With two or more tunnels, use LB on the card to round-robin.
+                Enable exit relay routing, then Disconnect and Connect.
                 """
         ),
     ]
@@ -596,8 +596,8 @@ private struct ExitNodeSetupView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 WizardHeader(
-                    title: "Exit node (val.town)",
-                    subtitle: "Deploy a val.town HTTP relay, then add it under Settings → Exit node.",
+                    title: "Exit Relay (VPS)",
+                    subtitle: "One-click bundle on Mac, one-command install on VPS.",
                     onBack: onBack,
                     accent: accent
                 )
@@ -605,6 +605,31 @@ private struct ExitNodeSetupView: View {
                 stepCard
             }
         }
+    }
+
+    private var targetHost: String {
+        let t = serverIP.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? "YOUR_VPS_IP" : t
+    }
+
+    private var uploadSnippet: String {
+        guard let bundleURL else {
+            return "Create the bundle first in step 2."
+        }
+        let fileName = bundleURL.lastPathComponent
+        return "scp \"$HOME/Desktop/\(fileName)\" root@\(targetHost):/root/"
+    }
+
+    private var installSnippet: String {
+        guard let bundleURL else {
+            return "Create the bundle first in step 2."
+        }
+        let ip = serverIP.trimmingCharacters(in: .whitespacesAndNewlines)
+        let inner = "cd /root && tar -xzf \(bundleURL.lastPathComponent) && bash /root/shade-exit-relay/install.sh"
+        if ip.isEmpty {
+            return inner
+        }
+        return "ssh root@\(ip) '\(inner)'"
     }
 
     private var stepCard: some View {
@@ -618,46 +643,107 @@ private struct ExitNodeSetupView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                if s.showAuthKey {
-                    if pskConfirmed {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ConfirmedHint(
-                                text: "PSK embedded: copy the script below into main.ts on val.town.",
-                                accent: accent,
-                                onChange: { pskConfirmed = false }
-                            )
-                            CodeSnippet(
-                                filename: "val HTTP val (TypeScript)",
-                                code: ValtownTemplate.withPSKEmbedded(pskDraft),
-                                accent: accent
-                            )
+                if step == 1 {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(bundleURL == nil
+                             ? "Create the bundle here, then continue to upload/install steps."
+                             : "Bundle created. Finder opened — continue to the next step.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+
+                        Toggle("Also save setup guide text file", isOn: $exportInstructions)
+                            .toggleStyle(.checkbox)
+                            .font(.system(size: 11))
+
+                        if let err = buildError {
+                            Text(err)
+                                .font(.system(size: 10))
+                                .foregroundStyle(.red)
                         }
-                    } else {
-                        AuthKeyPrompt(
-                            authKey: $pskDraft,
-                            accent: accent,
-                            title: "Choose exit PSK",
-                            detail:
-                                "Protects the val endpoint only. Same value as const PSK in the script "
-                                + "and in Shade (Settings → Exit node). Not your Apps Script AUTH_KEY.",
-                            onConfirm: { pskConfirmed = true }
-                        )
+
+                        if isBuilding {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("Building bundle…")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Button("Create Exit Relay Bundle") {
+                                buildPackage()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(accent)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                        }
+
+                        if let bundleURL {
+                            Button("Show in Finder") {
+                                ExitRelayPackager.revealInFinder(bundleURL)
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(accent)
+                        }
                     }
+                    .frame(maxWidth: 560, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(.white.opacity(0.04))
+                    )
                 }
 
-                if let link = s.link {
-                    Link(destination: link) {
-                        Label(link.absoluteString, systemImage: "arrow.up.right.square")
-                            .font(.system(size: 11, weight: .medium))
-                    }
+                if step == 2 || step == 3 {
+                    TextField("VPS IP for snippets (optional)", text: $serverIP)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+                }
+
+                if step == 2 {
+                    CodeSnippet(
+                        filename: "Upload to VPS",
+                        code: uploadSnippet,
+                        accent: accent
+                    )
+                }
+
+                if step == 3 {
+                    CodeSnippet(
+                        filename: "One-command VPS install",
+                        code: installSnippet,
+                        accent: accent
+                    )
                 }
 
                 StepNavBar(
                     step: $step,
                     total: steps.count,
                     accent: accent,
-                    nextDisabled: step == 2 && !pskConfirmed
+                    nextDisabled: step == 1 && bundleURL == nil
                 )
+            }
+        }
+    }
+
+    private func buildPackage() {
+        isBuilding = true
+        buildError = nil
+        Task {
+            do {
+                let result = try ExitRelayPackager.buildPackage(exportInstructions: exportInstructions)
+                await MainActor.run {
+                    self.bundleURL = result.bundleURL
+                    self.instructionsURL = result.instructionsURL
+                    self.isBuilding = false
+                    ExitRelayPackager.revealInFinder(result.bundleURL)
+                }
+            } catch {
+                await MainActor.run {
+                    self.buildError = error.localizedDescription
+                    self.isBuilding = false
+                }
             }
         }
     }

@@ -5,9 +5,9 @@ import SwiftUI
 struct ValBadge: View {
     var body: some View {
         HStack(spacing: 3) {
-            Image(systemName: "v.circle.fill")
+            Image(systemName: "arrow.turn.up.right.circle.fill")
                 .font(.system(size: 8, weight: .bold))
-            Text("val")
+            Text("exit")
                 .font(.system(size: 9, weight: .semibold))
         }
         .foregroundStyle(.mint)
@@ -41,14 +41,14 @@ struct ExitNodeSettingsPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(
-                "Relays, routing, and tunnel load balancing. Match host list to domains that block Google IPs."
+                "Exit relays (hosted or your VPS), routing, and tunnel load balancing. Match host list to domains that block Google IPs."
             )
             .font(.system(size: 10))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
             HStack {
-                Text("Use val tunnels")
+                Text("Use exit relays")
                     .font(.system(size: 11, weight: .medium))
                 Spacer()
                 Toggle("", isOn: Binding(
@@ -96,12 +96,12 @@ struct ExitNodeSettingsPanel: View {
                         .foregroundStyle(accent)
                 }
                 .buttonStyle(.plain)
-                .help("Add val relay")
+                .help("Add exit relay")
                 .disabled(!settings.exitRoutingAllowed)
             }
 
             if settings.exitNodeProfiles.isEmpty {
-                Text("No tunnels yet. Add a relay URL and PSK from your val deployment.")
+                Text("No tunnels yet. Add a relay URL and PSK from your exit relay deployment.")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             } else {
@@ -211,7 +211,7 @@ struct ExitNodePickerSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Val tunnels")
+                Text("Exit relays")
                     .font(.system(size: 16, weight: .bold, design: .rounded))
                 Spacer()
                 Button("Done") { dismiss() }
@@ -379,7 +379,7 @@ struct ExitNodeEditSheet: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text(isNew ? "New val tunnel" : "Edit val tunnel")
+                Text(isNew ? "New exit relay" : "Edit exit relay")
                     .font(.system(size: 14, weight: .semibold))
                 Spacer()
                 Button("Save") { save() }
@@ -401,9 +401,9 @@ struct ExitNodeEditSheet: View {
                             .frame(width: 18, alignment: .center)
                             .padding(.top, 1)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Val.town (or compatible HTTP exit)")
+                            Text("Compatible HTTP exit relay")
                                 .font(.system(size: 11, weight: .semibold))
-                            Text("Use the relay’s public URL and the same PSK you set in the val source.")
+                            Text("Use the relay’s public URL and the same PSK configured on that relay.")
                                 .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -420,21 +420,21 @@ struct ExitNodeEditSheet: View {
                             )
                     )
 
-                    EditField(label: "TUNNEL NAME", hint: "e.g. val primary") {
-                        TextField("Val tunnel", text: $name)
+                    EditField(label: "TUNNEL NAME", hint: "e.g. exit primary") {
+                        TextField("Exit relay", text: $name)
                             .textFieldStyle(.plain)
                             .font(.system(size: 13))
                             .editFieldStyle()
                     }
 
-                    EditField(label: "RELAY URL", hint: "https://….web.val.run") {
+                    EditField(label: "RELAY URL", hint: "https://relay.example.com") {
                         TextField("https://", text: $relayURL)
                             .textFieldStyle(.plain)
                             .font(.system(size: 12, design: .monospaced))
                             .editFieldStyle()
                     }
 
-                    EditField(label: "EXIT PSK", hint: "Same as const PSK in your val source (≥ 8 characters)") {
+                    EditField(label: "EXIT PSK", hint: "Same as PSK in your relay config (≥ 8 characters)") {
                         HStack(spacing: 0) {
                             if isPSKVisible {
                                 TextField("", text: $psk)
@@ -496,7 +496,7 @@ struct ExitNodeEditSheet: View {
 
     private func save() {
         let resolvedName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "Val \(profiles.count + 1)"
+            ? "Exit \(profiles.count + 1)"
             : name.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if let existing = profile,

@@ -132,7 +132,7 @@ class DomainFronter:
             c["id"]: bool(c.get("is_cf", False)) for c in self._script_configs
         }
         # Per-script exit relay: only attach "en" when the chosen script allows it.
-        # If "use_exit" is omitted (legacy configs), exit applies to all scripts.
+        # If "use_exit" is omitted, default is OFF (safer: only explicitly tagged scripts use exit).
         self._script_use_exit: dict[str, bool] = {}
         for c in self._script_configs:
             cid = str(c.get("id") or "").strip()
@@ -1736,7 +1736,7 @@ class DomainFronter:
     def _script_allows_exit(self, sid: str) -> bool:
         if sid in self._script_use_exit:
             return self._script_use_exit[sid]
-        return True
+        return False
 
     def _build_payload(self, method, url, headers, body):
         """Build the JSON relay payload dict."""
@@ -1745,18 +1745,27 @@ class DomainFronter:
             "u": url,
             "r": True,
         }
+        force_no_exit = False
         if headers:
             # Strip headers that would leak the user's real IP or expose
             # internal proxy metadata to the upstream destination server.
-            filt = {k: v for k, v in headers.items()
-                    if k.lower() not in self._STRIP_HEADERS}
+            # Internal control header: X-Shade-Force-No-Exit (used by UI egress check).
+            filt = {}
+            for k, v in headers.items():
+                lk = k.lower()
+                if lk in self._STRIP_HEADERS:
+                    continue
+                if lk == "x-shade-force-no-exit":
+                    force_no_exit = str(v).strip().lower() in {"1", "true", "yes", "on"}
+                    continue
+                filt[k] = v
             payload["h"] = filt if filt else headers
         if body:
             payload["b"] = base64.b64encode(body).decode()
             ct = headers.get("Content-Type") or headers.get("content-type")
             if ct:
                 payload["ct"] = ct
-        if self._url_uses_exit_node(url):
+        if (not force_no_exit) and self._url_uses_exit_node(url):
             sid = self._script_id_for_key(self._host_key(url))
             if self._script_allows_exit(sid):
                 cfg = self._next_exit_config()
