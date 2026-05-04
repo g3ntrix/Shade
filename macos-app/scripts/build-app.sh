@@ -79,6 +79,22 @@ for b in "$ARM_RELEASE_DIR"/*.bundle; do
   cp -R "$b" "$APP/Contents/Resources/"
 done
 
+# Embed the VPS exit-relay source tree so ExitRelayPackager can build the
+# bundle on any machine. Without this, the packager falls back to #filePath
+# (the developer's build-time path) and leaks/depends on that user's $HOME.
+RELAY_SRC="$ROOT/../tools/vps-exit-worker"
+if [[ -d "$RELAY_SRC" ]]; then
+  rm -rf "$APP/Contents/Resources/vps-exit-worker"
+  mkdir -p "$APP/Contents/Resources/vps-exit-worker"
+  for f in server.js package.json README.md ecosystem.config.example.cjs install.sh; do
+    cp "$RELAY_SRC/$f" "$APP/Contents/Resources/vps-exit-worker/$f"
+  done
+  chmod +x "$APP/Contents/Resources/vps-exit-worker/install.sh"
+else
+  echo "error: missing $RELAY_SRC — exit-relay packager will not work in shipped app" >&2
+  exit 1
+fi
+
 # Also copy logo flat so CloakBrandImage's primary path resolves.
 if [[ -f "$ROOT/Sources/Shade/Resources/Shade.png" ]]; then
   cp "$ROOT/Sources/Shade/Resources/Shade.png" "$APP/Contents/Resources/Shade.png"

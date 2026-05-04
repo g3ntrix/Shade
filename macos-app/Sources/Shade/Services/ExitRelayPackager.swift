@@ -35,9 +35,7 @@ enum ExitRelayPackager {
         let root = tmp.appendingPathComponent("shade-exit-relay", isDirectory: true)
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
 
-        let sourceDir = repoRoot()
-            .appendingPathComponent("tools", isDirectory: true)
-            .appendingPathComponent("vps-exit-worker", isDirectory: true)
+        let sourceDir = try resolveSourceDir()
 
         let files = [
             "server.js",
@@ -132,10 +130,28 @@ enum ExitRelayPackager {
         return formatter.string(from: Date())
     }
 
-    private static func repoRoot() -> URL {
+    /// Locate the bundled `vps-exit-worker` source directory.
+    ///
+    /// In a shipped .app the files live under `Contents/Resources/vps-exit-worker`
+    /// (copied in by `build-app.sh`). In dev (`swift run`) Bundle.main is the
+    /// SwiftPM tool, so we fall back to the repo layout via `#filePath`.
+    private static func resolveSourceDir() throws -> URL {
+        let fm = FileManager.default
+        if let resources = Bundle.main.resourceURL {
+            let bundled = resources.appendingPathComponent("vps-exit-worker", isDirectory: true)
+            if fm.fileExists(atPath: bundled.path) {
+                return bundled
+            }
+        }
         var url = URL(fileURLWithPath: #filePath)
         // .../macos-app/Sources/Shade/Services/ExitRelayPackager.swift -> repo root
         for _ in 0..<5 { url.deleteLastPathComponent() }
-        return url
+        let devPath = url
+            .appendingPathComponent("tools", isDirectory: true)
+            .appendingPathComponent("vps-exit-worker", isDirectory: true)
+        if fm.fileExists(atPath: devPath.path) {
+            return devPath
+        }
+        throw PackageError.sourceMissing(devPath.path)
     }
 }
