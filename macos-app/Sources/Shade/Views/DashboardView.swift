@@ -1349,12 +1349,12 @@ struct PowerButton: View {
                         colors: isRunning
                             ? [Color(hue: 0.0,  saturation: 0.85, brightness: 0.85),
                                Color(hue: 0.95, saturation: 0.8,  brightness: 0.80)]
-                            : [Color(hue: 0.72, saturation: 0.85, brightness: 0.95),
-                               Color(hue: 0.79, saturation: 0.90, brightness: 0.90)],
+                            : [Color(red: 0.33, green: 0.56, blue: 0.98),
+                               Color(red: 0.23, green: 0.44, blue: 0.90)],
                         startPoint: .topLeading, endPoint: .bottomTrailing))
                     .shadow(color: (isRunning
                                 ? Color(hue: 0.0, saturation: 0.85, brightness: 0.85)
-                                : Color(hue: 0.72, saturation: 0.85, brightness: 0.95))
+                                : Color(red: 0.33, green: 0.56, blue: 0.98))
                                 .opacity(hover ? 0.55 : 0.28),
                             radius: hover ? 16 : 8, y: 4)
             )

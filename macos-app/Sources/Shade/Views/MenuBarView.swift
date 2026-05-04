@@ -59,12 +59,12 @@ struct MenuBarView: View {
                                              Color(hue: 0.95, saturation: 0.8, brightness: 0.80)],
                                     startPoint: .top, endPoint: .bottom)
                                 : LinearGradient(
-                                    colors: [Color(hue: 0.72, saturation: 0.85, brightness: 0.95),
-                                             Color(hue: 0.79, saturation: 0.90, brightness: 0.90)],
+                                    colors: [Color(red: 0.33, green: 0.56, blue: 0.98),
+                                             Color(red: 0.23, green: 0.44, blue: 0.90)],
                                     startPoint: .top, endPoint: .bottom))
                             .shadow(color: (app.status.isRunning
                                 ? Color(hue: 0.0, saturation: 0.85, brightness: 0.85)
-                                : Color(hue: 0.72, saturation: 0.85, brightness: 0.95))
+                                : Color(red: 0.33, green: 0.56, blue: 0.98))
                                 .opacity(0.35), radius: 5, y: 2)
                     )
                 }
