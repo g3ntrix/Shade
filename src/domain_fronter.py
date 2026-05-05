@@ -1173,6 +1173,190 @@ class DomainFronter:
         key = self._script_keys.get(self._script_ids[0]) if self._script_ids else self.auth_key
         return f"X-Auth-Key: {key}\r\n" if key else ""
 
+    # ── Full tunnel mode (Apps Script CodeFull + tunnel-node) ─────────────
+
+    async def tunnel(self, host: str, port: int, reader, writer) -> None:
+        """Full tunnel transport: raw TCP stream via Apps Script tunnel ops."""
+        sid_hint = self._script_id_for_key(host.lower().rstrip("."))
+        session_id = None
+        pending = b""
+        try:
+            # Tiny preread window: if client already sent TLS ClientHello,
+            # bundle it with connect_data to save one round trip.
+            try:
+                pending = await asyncio.wait_for(reader.read(65536), timeout=0.05)
+            except asyncio.TimeoutError:
+                pending = b""
+
+            op = "connect_data" if pending else "connect"
+            connect_resp = await self._tunnel_request(
+                t=op,
+                sid_hint=sid_hint,
+                host=host,
+                port=port,
+                data=pending if pending else None,
+            )
+            if connect_resp.get("e"):
+                err_text = str(connect_resp.get("e", ""))
+                if err_text == "bad url":
+                    log.error(
+                        "Tunnel connect rejected with 'bad url'. "
+                        "Your deployed Apps Script is likely the relay-only Code.gs. "
+                        "Full mode requires CodeFull.gs (or compatible tunnel-aware script)."
+                    )
+                log.error("Tunnel connect failed (%s:%d): %s", host, port, connect_resp.get("e"))
+                return
+            session_id = connect_resp.get("sid")
+            if not session_id:
+                log.error("Tunnel connect returned no sid (%s:%d)", host, port)
+                return
+            await self._write_tunnel_data(writer, connect_resp)
+            if connect_resp.get("eof"):
+                return
+
+            while True:
+                try:
+                    outbound = await asyncio.wait_for(reader.read(65536), timeout=0.3)
+                except asyncio.TimeoutError:
+                    outbound = b""
+                if outbound == b"":
+                    # Empty poll keeps downstream bytes flowing in full mode.
+                    if reader.at_eof():
+                        break
+                    resp = await self._tunnel_request(
+                        t="data",
+                        sid_hint=sid_hint,
+                        sid=session_id,
+                    )
+                else:
+                    resp = await self._tunnel_request(
+                        t="data",
+                        sid_hint=sid_hint,
+                        sid=session_id,
+                        data=outbound,
+                    )
+                if resp.get("e"):
+                    log.debug("Tunnel data error sid=%s: %s", session_id[:8], resp.get("e"))
+                    break
+                await self._write_tunnel_data(writer, resp)
+                if resp.get("eof"):
+                    break
+        finally:
+            if session_id:
+                try:
+                    await self._tunnel_request(
+                        t="close",
+                        sid_hint=sid_hint,
+                        sid=session_id,
+                    )
+                except Exception:
+                    pass
+
+    async def _write_tunnel_data(self, writer, resp: dict) -> None:
+        raw = resp.get("d")
+        if not raw:
+            return
+        try:
+            data = base64.b64decode(raw)
+        except Exception as exc:
+            log.error("Tunnel bad base64: %s", exc)
+            return
+        if not data:
+            return
+        writer.write(data)
+        await writer.drain()
+
+    async def _tunnel_request(self, *, t: str, sid_hint: str,
+                              host: str | None = None,
+                              port: int | None = None,
+                              sid: str | None = None,
+                              data: bytes | None = None) -> dict:
+        payload: dict[str, object] = {"k": self._script_keys.get(sid_hint, ""), "t": t}
+        if host is not None:
+            payload["h"] = host
+        if port is not None:
+            payload["p"] = int(port)
+        if sid:
+            payload["sid"] = sid
+        if data:
+            payload["d"] = base64.b64encode(data).decode()
+        return await self._post_script_json(payload, sid=sid_hint)
+
+    async def _post_script_json(self, payload: dict, sid: str) -> dict:
+        path = self._exec_path_for_sid(sid)
+        body = json.dumps(payload).encode()
+        if self._h2_available():
+            try:
+                _status, _headers, resp_body = await asyncio.wait_for(
+                    self._h2.request(
+                        method="POST", path=path, host=self.http_host,
+                        headers={"content-type": "application/json"},
+                        body=body,
+                    ),
+                    timeout=self._relay_timeout,
+                )
+                return self._parse_script_json(resp_body)
+            except Exception as e:
+                self._record_h2_failure(e)
+                log.debug("H2 tunnel request failed (%s), fallback to H1", e)
+        async with self._semaphore:
+            reader, writer, created = await self._acquire()
+            try:
+                request = (
+                    f"POST {path} HTTP/1.1\r\n"
+                    f"Host: {self.http_host}\r\n"
+                    f"Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n"
+                    f"Accept-Encoding: gzip\r\n"
+                    f"Connection: keep-alive\r\n"
+                    f"\r\n"
+                )
+                writer.write(request.encode() + body)
+                await writer.drain()
+                status, resp_headers, resp_body = await self._read_http_response(reader)
+                for _ in range(5):
+                    if status not in (301, 302, 303, 307, 308):
+                        break
+                    location = resp_headers.get("location")
+                    if not location:
+                        break
+                    parsed = urlparse(location)
+                    rpath = parsed.path + ("?" + parsed.query if parsed.query else "")
+                    request = (
+                        f"GET {rpath} HTTP/1.1\r\n"
+                        f"Host: {parsed.netloc}\r\n"
+                        f"Accept-Encoding: gzip\r\n"
+                        f"Connection: keep-alive\r\n"
+                        f"\r\n"
+                    )
+                    writer.write(request.encode())
+                    await writer.drain()
+                    status, resp_headers, resp_body = await self._read_http_response(reader)
+                await self._release(reader, writer, created)
+                return self._parse_script_json(resp_body)
+            except Exception:
+                try:
+                    writer.close()
+                except Exception:
+                    pass
+                raise
+
+    @staticmethod
+    def _parse_script_json(resp_body: bytes) -> dict:
+        text = resp_body.decode(errors="replace").strip()
+        try:
+            parsed = json.loads(text)
+            return parsed if isinstance(parsed, dict) else {"e": "bad json response"}
+        except json.JSONDecodeError:
+            m = re.search(r"\{.*\}", text, re.DOTALL)
+            if m:
+                try:
+                    parsed = json.loads(m.group())
+                    return parsed if isinstance(parsed, dict) else {"e": "bad json response"}
+                except Exception:
+                    pass
+            return {"e": f"bad json response: {text[:200]}"}
+
     # ── Apps Script relay (apps_script mode) ──────────────────────
 
     async def relay(self, method: str, url: str,

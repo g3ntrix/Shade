@@ -168,6 +168,24 @@ struct SettingsView: View {
                         .toggleStyle(.switch)
                         .controlSize(.mini)
                 }
+
+                Divider().opacity(0.1)
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Full Tunnel Mode")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text("No client certificate needed for shared SOCKS traffic.")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary.opacity(0.7))
+                    }
+                    Spacer()
+                    Toggle("", isOn: $draft.useFullTunnel)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .top)
         }

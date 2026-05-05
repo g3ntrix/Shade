@@ -204,6 +204,7 @@ struct AppSettings: Codable, Equatable {
     // ── Advanced ──────────────────────────────────────────────────────────
     var enableAppLogs: Bool = false
     var youtubeViaRelay: Bool = false
+    var useFullTunnel: Bool = false
 
     // ── Exit node (Apps Script → exit relay → origin) ───────────────────────
     /// Settings: allow exit relays; when off the core omits exit_node and related controls are disabled.
@@ -248,6 +249,7 @@ struct AppSettings: Codable, Equatable {
         case listenHost, listenPort, socksPort
         case frontDomain, googleIP, verifySSL, logLevel
         case useSystemProxy, enableAppLogs, youtubeViaRelay
+        case useFullTunnel
         case exitRoutingAllowed, valRelayEnabled
         /// Legacy single toggle; read for migration only.
         case exitNodeEnabled
@@ -288,6 +290,7 @@ struct AppSettings: Codable, Equatable {
         useSystemProxy       = (try? c.decode(Bool.self,       forKey: .useSystemProxy))       ?? false
         enableAppLogs        = (try? c.decode(Bool.self,       forKey: .enableAppLogs))        ?? false
         youtubeViaRelay      = (try? c.decode(Bool.self,       forKey: .youtubeViaRelay))      ?? false
+        useFullTunnel        = (try? c.decode(Bool.self,       forKey: .useFullTunnel))        ?? false
         let legacyExitOn = (try? c.decode(Bool.self, forKey: .exitNodeEnabled)) ?? false
         exitRoutingAllowed = (try? c.decode(Bool.self, forKey: .exitRoutingAllowed)) ?? legacyExitOn
         valRelayEnabled    = (try? c.decode(Bool.self, forKey: .valRelayEnabled))    ?? legacyExitOn
@@ -335,6 +338,7 @@ struct AppSettings: Codable, Equatable {
         try c.encode(useSystemProxy,      forKey: .useSystemProxy)
         try c.encode(enableAppLogs,       forKey: .enableAppLogs)
         try c.encode(youtubeViaRelay,     forKey: .youtubeViaRelay)
+        try c.encode(useFullTunnel,       forKey: .useFullTunnel)
         try c.encode(exitRoutingAllowed, forKey: .exitRoutingAllowed)
         try c.encode(valRelayEnabled,    forKey: .valRelayEnabled)
         try c.encode(enableExitNodeLB,       forKey: .enableExitNodeLB)
@@ -456,7 +460,7 @@ struct AppSettings: Codable, Equatable {
         }.filter { !($0["id"] as? String ?? "").isEmpty }
 
         var dict: [String: Any] = [
-            "mode":           "apps_script",
+            "mode":           (useFullTunnel ? "full" : "apps_script"),
             "google_ip":      googleIP,
             "front_domain":   frontDomain,
             "script_id":      cred?.scriptID ?? "",

@@ -184,6 +184,9 @@ class ProxyServer:
         self.socks_enabled = config.get("socks5_enabled", True)
         self.socks_host = config.get("socks5_host", self.host)
         self.socks_port = config.get("socks5_port", 1080)
+        # Shared SOCKS5 clients (phones, TVs) usually cannot trust our local
+        # MITM CA. Prefer a raw TCP tunnel first so TLS stays end-to-end.
+        self.socks5_force_direct = bool(config.get("socks5_force_direct", True))
         self.mode = config.get("mode", "apps_script")
         if self.socks_enabled and self.socks_host == self.host \
                 and int(self.socks_port) == int(self.port):
@@ -590,6 +593,10 @@ class ProxyServer:
                                     reader: asyncio.StreamReader,
                                     writer: asyncio.StreamWriter):
         """Route a target connection through the Apps Script relay."""
+        if self.mode == "full":
+            await self.fronter.tunnel(host, port, reader, writer)
+            return
+
         # ── Block / bypass policy ─────────────────────────────────
         if self._is_blocked(host):
             log.warning("BLOCKED → %s:%d (matches block_hosts)", host, port)
@@ -736,7 +743,7 @@ class ProxyServer:
             writer.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
             await writer.drain()
 
-            await self._do_socks5_tunnel(host, port, reader, writer)
+            await self._do_socks5_tunnel(host, port, reader, writer, addr)
         except asyncio.TimeoutError:
             log.debug("SOCKS5 timeout: %s", addr)
         except asyncio.IncompleteReadError:
@@ -750,8 +757,25 @@ class ProxyServer:
             except Exception:
                 pass
 
-    async def _do_socks5_tunnel(self, host: str, port: int, reader, writer):
+    async def _do_socks5_tunnel(self, host: str, port: int, reader, writer, client_addr=None):
         if self.mode == "apps_script":
+            peer_ip = ""
+            if isinstance(client_addr, (tuple, list)) and client_addr:
+                peer_ip = str(client_addr[0])
+            is_lan_client = bool(peer_ip) and peer_ip not in {"127.0.0.1", "::1", "localhost"}
+
+            if self.socks5_force_direct and is_lan_client:
+                log.info("SOCKS5 direct-first tunnel → %s:%d", host, port)
+                ok = await self._do_plain_tcp_tunnel(
+                    host, port, reader, writer, fragment=True, timeout=4.0
+                )
+                if ok:
+                    return
+                log.warning(
+                    "SOCKS5 direct-first failed → %s:%d (trying relay/MITM fallback)",
+                    host, port,
+                )
+
             if self._is_ip_literal(host):
                 if not self._direct_temporarily_disabled(host):
                     log.info("SOCKS5 direct tunnel → %s:%d (IP literal)", host, port)
@@ -818,10 +842,11 @@ class ProxyServer:
         except ValueError:
             return False
 
-    async def _do_plain_tcp_tunnel(self, host: str, port: int, reader, writer, fragment: bool = False) -> bool:
+    async def _do_plain_tcp_tunnel(self, host: str, port: int, reader, writer,
+                                   fragment: bool = False, timeout: float = 20.0) -> bool:
         try:
             r_remote, w_remote = await asyncio.wait_for(
-                asyncio.open_connection(host, port), timeout=20
+                asyncio.open_connection(host, port), timeout=timeout
             )
         except Exception as e:
             if isinstance(e, OSError) and getattr(e, "winerror", None) == 1231:
