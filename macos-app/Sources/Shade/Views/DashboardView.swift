@@ -869,22 +869,8 @@ struct SystemProxyCard: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                
-                Spacer(minLength: 0)
 
-                if app.settings.useSystemProxy && app.status.isRunning {
-                    let host = app.settings.listenHost == "0.0.0.0"
-                        ? "127.0.0.1" : app.settings.listenHost
-                    let port = app.activeSOCKSPort > 0
-                        ? app.activeSOCKSPort : app.settings.socksPort
-                    Label {
-                        Text(verbatim: "\(host):\(port)")
-                    } icon: {
-                        Image(systemName: "checkmark.circle.fill")
-                    }
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.green)
-                }
+                Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
