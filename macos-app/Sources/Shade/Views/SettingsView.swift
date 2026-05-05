@@ -62,14 +62,7 @@ struct SettingsView: View {
                 runningHint
             }
         }
-        .onChange(of: app.settings) { _ in
-            // Enforce dependent flags before persisting.
-            if !app.settings.exitRoutingAllowed && app.settings.valRelayEnabled {
-                app.settings.valRelayEnabled = false
-                return
-            }
-            app.saveSettings()
-        }
+        .onChange(of: app.settings) { _ in app.saveSettings() }
     }
 
     // MARK: - Sub-views
@@ -129,7 +122,7 @@ struct SettingsView: View {
     }
 
     private var exitNodeSection: some View {
-        SettingsCard(title: "Exit node", icon: "arrow.turn.up.right", expandToFitParent: true) {
+        SettingsCard(title: "Full Tunnel Servers", icon: "server.rack", expandToFitParent: true) {
             ExitNodeSettingsPanel(settings: $app.settings)
         }
         .frame(
@@ -217,6 +210,14 @@ struct SettingsView: View {
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.mini)
+                }
+
+                if app.settings.useFullTunnel,
+                   !app.settings.credentials.contains(where: { $0.usesFullTunnel }) {
+                    Text("Full Tunnel expects CodeFull.gs deployments. Tag your Apps Script profiles with \"Full Tunnel capable\" (Dashboard -> chips).")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.yellow.opacity(0.85))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .top)

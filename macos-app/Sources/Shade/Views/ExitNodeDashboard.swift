@@ -7,7 +7,7 @@ struct ValBadge: View {
         HStack(spacing: 3) {
             Image(systemName: "arrow.turn.up.right.circle.fill")
                 .font(.system(size: 8, weight: .bold))
-            Text("exit")
+            Text("tunnel")
                 .font(.system(size: 9, weight: .semibold))
         }
         .foregroundStyle(.mint)
@@ -40,30 +40,19 @@ struct ExitNodeSettingsPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(
-                "Exit relays (hosted or your VPS), routing, and tunnel load balancing. Match host list to domains that block Google IPs."
-            )
+            Text("Saved Full Tunnel servers (URL + key) used by Setup guides to generate CodeFull.gs quickly.")
             .font(.system(size: 10))
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
             HStack {
-                Text("Use exit relays")
-                    .font(.system(size: 11, weight: .medium))
+                Text("Use Full Tunnel mode in Advanced to activate CodeFull traffic path.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
                 Spacer()
-                Toggle("", isOn: Binding(
-                    get: { settings.exitRoutingAllowed && settings.valRelayEnabled },
-                    set: { enabled in
-                        settings.exitRoutingAllowed = enabled
-                        settings.valRelayEnabled = enabled
-                    }
-                ))
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
             }
 
-            if settings.valRelayEnabled && valid.isEmpty && !settings.exitNodeProfiles.isEmpty {
+            if valid.isEmpty && !settings.exitNodeProfiles.isEmpty {
                 Text("Saved tunnels need a valid https URL and PSK (≥ 8 characters).")
                     .font(.system(size: 10))
                     .foregroundStyle(.orange)
@@ -79,7 +68,7 @@ struct ExitNodeSettingsPanel: View {
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.mini)
-                        .disabled(!settings.exitRoutingAllowed || !settings.valRelayEnabled)
+                        .disabled(false)
                 }
             }
 
@@ -96,12 +85,11 @@ struct ExitNodeSettingsPanel: View {
                         .foregroundStyle(accent)
                 }
                 .buttonStyle(.plain)
-                .help("Add exit relay")
-                .disabled(!settings.exitRoutingAllowed)
+                .help("Add tunnel server")
             }
 
             if settings.exitNodeProfiles.isEmpty {
-                Text("No tunnels yet. Add a relay URL and PSK from your exit relay deployment.")
+                Text("No tunnel servers yet. Add the tunnel URL and key from your VPS setup.")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             } else {
@@ -140,37 +128,11 @@ struct ExitNodeSettingsPanel: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .disabled(!settings.exitRoutingAllowed)
+                .disabled(false)
 
             }
 
             Divider().opacity(0.12)
-
-            HStack {
-                Text("Mode")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Picker("", selection: $settings.exitNodeMode) {
-                    ForEach(ExitNodeMode.allCases) { m in
-                        Text(m.label).tag(m)
-                    }
-                }
-                .labelsHidden()
-                .controlSize(.small)
-                .frame(minWidth: 120)
-            }
-
-            if settings.exitNodeMode == .selective {
-                SField(
-                    label: "Host suffixes",
-                    hint: "Space- or comma-separated (subdomains match automatically)"
-                ) {
-                    TextField("chatgpt.com openai.com …", text: $settings.exitNodeHosts, axis: .vertical)
-                        .lineLimit(3...6)
-                        .monoField()
-                }
-            }
         }
         .frame(maxWidth: .infinity, alignment: .top)
         .sheet(isPresented: $showPicker) {

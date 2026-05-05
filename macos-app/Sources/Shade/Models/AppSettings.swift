@@ -9,12 +9,16 @@ struct Credential: Codable, Equatable, Identifiable {
     var authKey: String
     var isEnabledForLB: Bool = true
     var usesCloudflare: Bool = false
+    /// When true, this profile's deployed Apps Script is expected to be tunnel-aware
+    /// (e.g. CodeFull.gs). Used to prevent Full Tunnel failures when load-balancing.
+    var usesFullTunnel: Bool = false
     /// When true, relay JSON may include exit-node (`en`) for this deployment.
     var usesValTunnel: Bool = false
 
     init(id: UUID = UUID(), name: String = "Default",
          scriptID: String = "", authKey: String = "",
          isEnabledForLB: Bool = true, usesCloudflare: Bool = false,
+         usesFullTunnel: Bool = false,
          usesValTunnel: Bool = false) {
         self.id = id
         self.name = name
@@ -22,11 +26,12 @@ struct Credential: Codable, Equatable, Identifiable {
         self.authKey = authKey
         self.isEnabledForLB = isEnabledForLB
         self.usesCloudflare = usesCloudflare
+        self.usesFullTunnel = usesFullTunnel
         self.usesValTunnel = usesValTunnel
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, scriptID, authKey, isEnabledForLB, usesCloudflare, usesValTunnel
+        case id, name, scriptID, authKey, isEnabledForLB, usesCloudflare, usesFullTunnel, usesValTunnel
     }
 
     init(from decoder: Decoder) throws {
@@ -37,6 +42,7 @@ struct Credential: Codable, Equatable, Identifiable {
         authKey        = try c.decode(String.self, forKey: .authKey)
         isEnabledForLB = (try? c.decode(Bool.self, forKey: .isEnabledForLB)) ?? true
         usesCloudflare = (try? c.decode(Bool.self, forKey: .usesCloudflare)) ?? false
+        usesFullTunnel = (try? c.decode(Bool.self, forKey: .usesFullTunnel)) ?? false
         usesValTunnel = (try? c.decode(Bool.self, forKey: .usesValTunnel)) ?? false
     }
 }
@@ -366,25 +372,46 @@ struct AppSettings: Codable, Equatable {
         let valPool    = enabled.filter  { $0.usesValTunnel }
         let nonValPool = enabled.filter  { !$0.usesValTunnel }
 
+        var selectedByLB: [Credential]
         switch lbStrategy {
         case .balanced:
-            return enabled
+            selectedByLB = enabled
         case .cfOnly:
-            return cfPool
+            selectedByLB = cfPool
         case .normalOnly:
-            return normalPool.filter { !$0.usesValTunnel }
+            selectedByLB = normalPool.filter { !$0.usesValTunnel }
         case .cfPreferred:
-            if lbFallbackActive { return enabled }          // fell back → use all
-            return cfPool.isEmpty ? normalPool : cfPool     // primary pool
+            if lbFallbackActive {
+                selectedByLB = enabled     // fell back → use all
+            } else {
+                selectedByLB = cfPool.isEmpty ? normalPool : cfPool  // primary pool
+            }
         case .normalPreferred:
-            if lbFallbackActive { return enabled }
-            return normalPool.isEmpty ? cfPool : normalPool
+            if lbFallbackActive {
+                selectedByLB = enabled
+            } else {
+                selectedByLB = normalPool.isEmpty ? cfPool : normalPool
+            }
         case .valOnly:
-            return valPool
+            selectedByLB = valPool
         case .valPreferred:
-            if lbFallbackActive { return enabled }
-            return valPool.isEmpty ? nonValPool : valPool
+            if lbFallbackActive {
+                selectedByLB = enabled
+            } else {
+                selectedByLB = valPool.isEmpty ? nonValPool : valPool
+            }
         }
+
+        // Full Tunnel Mode uses Apps Script tunnel ops; only CodeFull.gs-like
+        // deployments are safe. If the user has tagged any tunnel-capable
+        // profiles, prefer those (even if the LB strategy would pick others).
+        if useFullTunnel {
+            let fullTagged = enabled.filter(\.usesFullTunnel)
+            guard !fullTagged.isEmpty else { return selectedByLB }
+            let intersect = selectedByLB.filter(\.usesFullTunnel)
+            return intersect.isEmpty ? fullTagged : intersect
+        }
+        return selectedByLB
     }
 
     /// LB cluster dots: full emphasis for the strategy’s preferred tier only (fallback tier matches dimmed out-of-pool styling).
@@ -394,6 +421,11 @@ struct AppSettings: Codable, Equatable {
         let cfPool = enabled.filter(\.usesCloudflare)
         let normalPool = enabled.filter { !$0.usesCloudflare }
         let valPool = enabled.filter(\.usesValTunnel)
+
+        if useFullTunnel {
+            let fullTagged = enabled.filter(\.usesFullTunnel)
+            if !fullTagged.isEmpty { return cred.usesFullTunnel }
+        }
 
         switch lbStrategy {
         case .balanced:
@@ -448,14 +480,26 @@ struct AppSettings: Codable, Equatable {
 
     func makeCoreConfig() -> [String: Any] {
         let cred = activeCredential
-        let scriptsToUse = enableLoadBalancing ? effectiveLBPool : (cred.map { [$0] } ?? [])
+        var scriptsToUse = enableLoadBalancing ? effectiveLBPool : (cred.map { [$0] } ?? [])
+        if useFullTunnel {
+            // Full mode requires tunnel-capable deployments (CodeFull.gs).
+            // Keep backward compatibility: if no profile is tagged yet,
+            // keep current behavior and use the selected scripts.
+            let taggedBase = enableLoadBalancing
+                ? credentials.filter { $0.isEnabledForLB && $0.usesFullTunnel }
+                : credentials.filter(\.usesFullTunnel)
+            if !taggedBase.isEmpty {
+                let taggedCurrent = scriptsToUse.filter(\.usesFullTunnel)
+                scriptsToUse = taggedCurrent.isEmpty ? taggedBase : taggedCurrent
+            }
+        }
 
         let scriptConfigs: [[String: Any]] = scriptsToUse.map { c in
             [
                 "id": c.scriptID,
                 "key": c.authKey,
                 "is_cf": c.usesCloudflare,
-                "use_exit": c.usesValTunnel,
+                "use_exit": false,
             ]
         }.filter { !($0["id"] as? String ?? "").isEmpty }
 
@@ -475,27 +519,7 @@ struct AppSettings: Codable, Equatable {
             "verify_ssl":     verifySSL,
             "youtube_via_relay": youtubeViaRelay
         ]
-        let exitPool = effectiveExitNodePool
-        if !exitPool.isEmpty {
-            let tokens = exitNodeHosts.split { ch in
-                ch.isWhitespace || ch == ","
-            }.map { $0.lowercased() }.filter { !$0.isEmpty }
-            let relayConfigs: [[String: String]] = exitPool.map { p in
-                [
-                    "relay_url": p.relayURL.trimmingCharacters(in: .whitespacesAndNewlines),
-                    "psk": p.psk,
-                ]
-            }
-            var en: [String: Any] = [
-                "enabled": true,
-                "mode": exitNodeMode.rawValue,
-                "relay_configs": relayConfigs,
-            ]
-            if exitNodeMode == .selective {
-                en["hosts"] = tokens
-            }
-            dict["exit_node"] = en
-        }
+        // Exit relay path is retired in the current UX flow.
         dict = dict.compactMapValues { value -> Any? in
             if let s = value as? String { return s.isEmpty ? nil : s }
             return value

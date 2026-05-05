@@ -1210,7 +1210,10 @@ class DomainFronter:
             if not session_id:
                 log.error("Tunnel connect returned no sid (%s:%d)", host, port)
                 return
-            await self._write_tunnel_data(writer, connect_resp)
+            initial_down = await self._write_tunnel_data(writer, connect_resp)
+            initial_up = len(pending)
+            if initial_down or initial_up:
+                log.info("[TRAFFIC] rx=%d tx=%d", initial_down, initial_up)
             if connect_resp.get("eof"):
                 return
 
@@ -1238,7 +1241,10 @@ class DomainFronter:
                 if resp.get("e"):
                     log.debug("Tunnel data error sid=%s: %s", session_id[:8], resp.get("e"))
                     break
-                await self._write_tunnel_data(writer, resp)
+                down = await self._write_tunnel_data(writer, resp)
+                up = len(outbound)
+                if down or up:
+                    log.info("[TRAFFIC] rx=%d tx=%d", down, up)
                 if resp.get("eof"):
                     break
         finally:
@@ -1252,19 +1258,20 @@ class DomainFronter:
                 except Exception:
                     pass
 
-    async def _write_tunnel_data(self, writer, resp: dict) -> None:
+    async def _write_tunnel_data(self, writer, resp: dict) -> int:
         raw = resp.get("d")
         if not raw:
-            return
+            return 0
         try:
             data = base64.b64decode(raw)
         except Exception as exc:
             log.error("Tunnel bad base64: %s", exc)
-            return
+            return 0
         if not data:
-            return
+            return 0
         writer.write(data)
         await writer.drain()
+        return len(data)
 
     async def _tunnel_request(self, *, t: str, sid_hint: str,
                               host: str | None = None,

@@ -1,9 +1,9 @@
 import SwiftUI
 import AppKit
 
-/// Top-level setup wizard: Apps Script, Cloudflare Worker, and Exit Relay (VPS).
+/// Top-level setup wizard: Apps Script, Cloudflare Worker, and Full Tunnel (VPS + Apps Script).
 struct SetupView: View {
-    enum Mode { case chooser, appsScript, cloudflare, exitRelay }
+    enum Mode { case chooser, appsScript, cloudflare, fullTunnel }
     @State private var mode: Mode = .chooser
 
     var body: some View {
@@ -20,8 +20,8 @@ struct SetupView: View {
             CloudflareSetupView(onBack: {
                 withAnimation(.easeOut(duration: 0.2)) { mode = .chooser }
             })
-        case .exitRelay:
-            VPSExitNodeSetupView(onBack: {
+        case .fullTunnel:
+            FullTunnelSetupView(onBack: {
                 withAnimation(.easeOut(duration: 0.2)) { mode = .chooser }
             })
         }
@@ -40,7 +40,7 @@ private struct SetupChooserView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Setup Guide")
                         .font(.system(size: 28, weight: .bold, design: .rounded))
-                    Text("Pick your main relay path. Exit Relay is provider-agnostic and works with your own VPS.")
+                    Text("Pick your main relay path. Full Tunnel includes VPS + Apps Script in one guided flow.")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -48,9 +48,9 @@ private struct SetupChooserView: View {
 
                 HStack(alignment: .top, spacing: 14) {
                     ChooserCard(
-                        title: "Apps Script only",
-                        subtitle: "Simplest, 5 steps",
-                        details: "Relay on Google Apps Script only. Traffic exits from Google IPs.",
+                        title: "Apps Script",
+                        subtitle: "Standard + optional Full Tunnel",
+                        details: "Deploy standard Code.gs or tunnel-capable CodeFull.gs from the same guide. Traffic exits from Google IPs (standard) or your tunnel-node path (full mode).",
                         icon: "doc.text.fill",
                         accent: .purple
                     ) {
@@ -68,13 +68,13 @@ private struct SetupChooserView: View {
                     }
 
                     ChooserCard(
-                        title: "Exit Relay",
-                        subtitle: "Optional, VPS package guide",
-                        details: "Build a ready-to-upload package, run copy-paste install commands on your VPS, then add Relay URL + PSK in Settings → Exit node.",
+                        title: "Full Tunnel",
+                        subtitle: "VPS + CodeFull.gs, end-to-end",
+                        details: "Set up your VPS tunnel-node first, then deploy CodeFull.gs with tunnel URL + key, then add the resulting deployment profile in Shade.",
                         icon: "server.rack",
                         accent: .teal
                     ) {
-                        onPick(.exitRelay)
+                        onPick(.fullTunnel)
                     }
                 }
             }
@@ -159,6 +159,8 @@ private struct AppsScriptSetupView: View {
     @State private var authKeyDraft: String = ""
     @State private var authKeyConfirmed: Bool = false
     @State private var preferFullTunnelScript = false
+    @State private var deploymentIDDraft: String = ""
+    @State private var autoAddedScriptID: String? = nil
     @State private var useExistingTunnelConfig = false
     @State private var selectedTunnelProfileID: UUID? = nil
     @State private var manualTunnelURL: String = ""
@@ -186,13 +188,9 @@ private struct AppsScriptSetupView: View {
                 to a strong secret of your choice: you'll enter the same value into
                 Shade as your Auth Key. Save with ⌘S.
 
-                This version can optionally send some requests through an exit relay \
-                (hosted relay, VPS, etc.): add tunnels under Settings → Exit node; host list \
-                and mode live in Settings → Exit node. The exit PSK and AUTH_KEY are \
-                two different secrets.
-
-                If you plan to use Full Tunnel Mode, deploy apps_script/CodeFull.gs \
-                instead of Code.gs (same AUTH_KEY, plus tunnel-node URL + key).
+                This guide is for normal Apps Script mode (Code.gs).
+                For Full Tunnel Mode (CodeFull.gs + VPS tunnel-node), use the
+                dedicated "Full Tunnel" guide from Setup.
                 """,
             showAuthKey: true
         ),
@@ -218,6 +216,8 @@ private struct AppsScriptSetupView: View {
                 After deploying, Google shows a "Deployment ID" and a "Web app URL". \
                 Copy the Deployment ID (it starts with AKfycb…). That's your Script ID.
 
+                Optional: paste it into the box on this step to auto-add the profile later.
+
                 You now have everything:
                   • Script ID → the Deployment ID you just copied
                   • Auth Key  → the AUTH_KEY string you set in step 2
@@ -227,13 +227,13 @@ private struct AppsScriptSetupView: View {
             title: "Add the profile to Shade",
             body:
                 """
-                Head back to the Dashboard, click + Add next to Profile, paste your \
-                Script ID and Auth Key, and save. Hit Start and you're connected.
+                If you pasted a Deployment ID above, Shade will add the profile automatically.
 
-                If you use an exit node: deploy it (Setup Guide → Exit node), add the \
-                URL and PSK under Settings → Exit node, tune host list under \
-                Settings → Exit node, then Stop → Start. Redeploy Apps Script when \
-                you replace Code.gs from this guide.
+                Otherwise, head back to the Dashboard, click + Add next to Profile, \
+                paste your Script ID and Auth Key, and save. Hit Start and you're connected.
+
+                If later you want Full Tunnel quality, run the dedicated
+                Full Tunnel guide and deploy CodeFull.gs instead.
                 """
         ),
     ]
@@ -263,6 +263,35 @@ private struct AppsScriptSetupView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                if step == 3 {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Optional: paste your Deployment ID here for auto-add.")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        TextField("AKfycb…", text: $deploymentIDDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 11, design: .monospaced))
+                        Text("If filled, the profile will be created/updated automatically on the last step.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                if step == steps.count - 1 {
+                    let trimmed = deploymentIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty, autoAddedScriptID == trimmed {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                            Text("Profile added automatically to your Dashboard.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+
                 if s.showAuthKey {
                     if authKeyConfirmed {
                         VStack(alignment: .leading, spacing: 8) {
@@ -271,15 +300,8 @@ private struct AppsScriptSetupView: View {
                                 accent: accent,
                                 onChange: { authKeyConfirmed = false }
                             )
-                            Toggle("Use CodeFull.gs (normal + full tunnel mode)", isOn: $preferFullTunnelScript)
-                                .toggleStyle(.checkbox)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                            if preferFullTunnelScript {
-                                tunnelConfigBlock
-                            }
                             CodeSnippet(
-                                filename: preferFullTunnelScript ? "CodeFull.gs" : "Code.gs",
+                                filename: "Code.gs",
                                 code: renderedAppsScriptCode(),
                                 accent: accent
                             )
@@ -306,31 +328,15 @@ private struct AppsScriptSetupView: View {
                 )
             }
         }
-        .onChange(of: preferFullTunnelScript) { enabled in
-            if enabled && selectedTunnelProfileID == nil {
-                selectedTunnelProfileID = activeOrFirstValidTunnelProfile()?.id
-            }
+        .onChange(of: step) { _ in
+            // When reaching the final step, optionally auto-add using the
+            // pasted Deployment ID.
+            tryAutoAddProfile()
         }
     }
 
     private func renderedAppsScriptCode() -> String {
         let key = authKeyDraft.replacingOccurrences(of: "\"", with: "\\\"")
-        if preferFullTunnelScript {
-            let tunnel = effectiveTunnelConfig()
-            return codeGS_Full
-                .replacingOccurrences(
-                    of: "CHANGE_ME_TO_A_STRONG_SECRET",
-                    with: key
-                )
-                .replacingOccurrences(
-                    of: "https://YOUR_TUNNEL_NODE_URL",
-                    with: tunnel.url.replacingOccurrences(of: "\"", with: "\\\"")
-                )
-                .replacingOccurrences(
-                    of: "YOUR_TUNNEL_AUTH_KEY",
-                    with: tunnel.key.replacingOccurrences(of: "\"", with: "\\\"")
-                )
-        }
         return codeGS_AppsScriptOnly
             .replacingOccurrences(
                 of: "CHANGE_ME_TO_A_STRONG_SECRET",
@@ -457,6 +463,46 @@ private struct AppsScriptSetupView: View {
         useExistingTunnelConfig = true
         justAddedTunnel = true
     }
+
+    private func tryAutoAddProfile() {
+        guard step == steps.count - 1 else { return }
+        guard authKeyConfirmed else { return }
+
+        let scriptID = deploymentIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !scriptID.isEmpty else { return }
+        guard autoAddedScriptID != scriptID else { return }
+
+        let key = authKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard key.count >= 8 else { return }
+
+        let usesFullTunnel = false
+        let resolvedName = "Apps Script Relay"
+
+        if let idx = app.settings.credentials.firstIndex(where: { $0.scriptID == scriptID }) {
+            app.settings.credentials[idx].authKey = key
+            app.settings.credentials[idx].usesFullTunnel = usesFullTunnel
+            if app.settings.credentials[idx].name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                app.settings.credentials[idx].name = resolvedName
+            }
+            app.settings.activeCredentialID = app.settings.credentials[idx].id
+        } else {
+            let cred = Credential(
+                name: resolvedName,
+                scriptID: scriptID,
+                authKey: key,
+                isEnabledForLB: true,
+                usesCloudflare: false,
+                usesFullTunnel: usesFullTunnel,
+                usesValTunnel: false
+            )
+            app.settings.credentials.append(cred)
+            app.settings.activeCredentialID = cred.id
+        }
+
+        app.settings.useFullTunnel = usesFullTunnel
+        app.saveSettings()
+        autoAddedScriptID = scriptID
+    }
 }
 
 // MARK: - Cloudflare branch
@@ -547,12 +593,6 @@ private struct CloudflareSetupView: View {
                 your Script ID and the password from step 5, and turn on the \
                 "Routes through Cloudflare Worker" toggle so this profile is \
                 tagged correctly. Save and hit Start.
-
-                If you use an exit node: deploy it (Setup Guide → Exit node), add \
-                tunnels under Settings → Exit node, tune routing under \
-                Settings → Exit node, then Stop → Start. This Code.gs tries the exit \
-                hop when Shade marks a request. Redeploy Apps Script after updating \
-                the snippet from this guide.
                 """
         ),
     ]
@@ -686,112 +726,36 @@ private struct CloudflareSetupView: View {
     }
 }
 
-// MARK: - Exit relay (self-hosted VPS)
+// MARK: - Full tunnel (VPS + CodeFull.gs)
 
-private struct VPSExitNodeSetupView: View {
+private struct FullTunnelSetupView: View {
+    @EnvironmentObject var app: AppState
     let onBack: () -> Void
     @State private var step: Int = 0
-    @State private var bundleURL: URL? = nil
-    @State private var instructionsURL: URL? = nil
-    @State private var isBuilding = false
-    @State private var buildError: String? = nil
-    @State private var serverIP: String = ""
-    @State private var exportInstructions = true
-
+    @State private var authKeyDraft: String = ""
+    @State private var authKeyConfirmed: Bool = false
+    @State private var tunnelURLDraft: String = ""
+    @State private var tunnelKeyDraft: String = ""
+    @State private var deploymentIDDraft: String = ""
+    @State private var autoAddedScriptID: String? = nil
     private let accent: Color = .teal
 
     private let steps: [WizardStep] = [
-        .init(
-            title: "What this does",
-            body:
-                """
-                Shade can package the Exit Relay for you in one click. You upload one file,
-                run one install command on the VPS, and the installer prints Relay URL + PSK.
-
-                No manual editing of server.js or ecosystem files is required.
-                """
-        ),
-        .init(
-            title: "Create bundle on this Mac",
-            body:
-                """
-                Click Create Exit Relay Bundle. Shade will generate:
-                - a .tgz bundle to upload to your VPS
-                - a setup .txt guide next to that bundle
-
-                Then Shade opens Finder on the generated files.
-                """
-        ),
-        .init(
-            title: "Upload bundle to VPS",
-            body:
-                """
-                Copy-paste the upload command below. It sends the bundle to /root on your VPS.
-                """
-        ),
-        .init(
-            title: "One-command install on VPS",
-            body:
-                """
-                Copy-paste the install command below. The installer automatically:
-                - installs Node.js and PM2 if needed
-                - picks a free relay port (starts at 18081)
-                - generates a strong PSK
-                - starts and persists the service with PM2
-                - prints Relay URL and Exit PSK
-                """
-        ),
-        .init(
-            title: "Use output in Shade",
-            body:
-                """
-                In Shade: Settings -> Exit node -> +
-                - Relay URL: paste installer output
-                - PSK: paste installer output
-
-                Enable exit relay routing, then Disconnect and Connect.
-                """
-        ),
+        .init(title: "Set up VPS tunnel-node", body: "Run the VPS install/build commands in the code block below. This creates your tunnel endpoint and key."),
+        .init(title: "Confirm tunnel URL + key", body: "After VPS setup, paste your tunnel URL and tunnel auth key here. These will be baked into CodeFull.gs."),
+        .init(title: "Create Apps Script + paste CodeFull.gs", body: "Create a new Apps Script project, replace default Code.gs with generated CodeFull.gs, and save."),
+        .init(title: "Deploy as Web app", body: "Deploy as Web app (Execute as Me, Anyone). Then copy Deployment ID."),
+        .init(title: "Add profile to Shade", body: "Paste Deployment ID here to auto-add profile, then Start.")
     ]
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                WizardHeader(
-                    title: "Exit Relay (VPS)",
-                    subtitle: "One-click bundle on Mac, one-command install on VPS.",
-                    onBack: onBack,
-                    accent: accent
-                )
+                WizardHeader(title: "Full Tunnel Setup", subtitle: "VPS first, then CodeFull.gs deploy, then add profile.", onBack: onBack, accent: accent)
                 StepperBar(count: steps.count, current: step, accent: accent)
                 stepCard
             }
         }
-    }
-
-    private var targetHost: String {
-        let t = serverIP.trimmingCharacters(in: .whitespacesAndNewlines)
-        return t.isEmpty ? "YOUR_VPS_IP" : t
-    }
-
-    private var uploadSnippet: String {
-        guard let bundleURL else {
-            return "Create the bundle first in step 2."
-        }
-        let fileName = bundleURL.lastPathComponent
-        return "scp \"$HOME/Desktop/\(fileName)\" root@\(targetHost):/root/"
-    }
-
-    private var installSnippet: String {
-        guard let bundleURL else {
-            return "Create the bundle first in step 2."
-        }
-        let ip = serverIP.trimmingCharacters(in: .whitespacesAndNewlines)
-        let inner = "cd /root && tar -xzf \(bundleURL.lastPathComponent) && bash /root/shade-exit-relay/install.sh"
-        if ip.isEmpty {
-            return inner
-        }
-        return "ssh root@\(ip) '\(inner)'"
     }
 
     private var stepCard: some View {
@@ -799,115 +763,82 @@ private struct VPSExitNodeSetupView: View {
         return Card {
             VStack(alignment: .leading, spacing: 14) {
                 StepCardHeader(index: step, total: steps.count, title: s.title, accent: accent)
+                Text(s.body).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
 
-                Text(s.body)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
+                if step == 0 {
+                    CodeSnippet(filename: "VPS tunnel-node setup", code: fullTunnelVPSSnippet, accent: accent)
+                }
                 if step == 1 {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(bundleURL == nil
-                             ? "Create the bundle here, then continue to upload/install steps."
-                             : "Bundle created. Finder opened — continue to the next step.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-
-                        Toggle("Also save setup guide text file", isOn: $exportInstructions)
-                            .toggleStyle(.checkbox)
-                            .font(.system(size: 11))
-
-                        if let err = buildError {
-                            Text(err)
-                                .font(.system(size: 10))
-                                .foregroundStyle(.red)
-                        }
-
-                        if isBuilding {
-                            HStack(spacing: 8) {
-                                ProgressView().controlSize(.small)
-                                Text("Building bundle…")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                            }
-                        } else {
-                            Button("Create Exit Relay Bundle") {
-                                buildPackage()
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(accent)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                        }
-
-                        if let bundleURL {
-                            Button("Show in Finder") {
-                                ExitRelayPackager.revealInFinder(bundleURL)
-                            }
-                            .buttonStyle(.plain)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(accent)
-                        }
-                    }
-                    .frame(maxWidth: 560, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(.white.opacity(0.04))
-                    )
+                    TextField("Tunnel URL (e.g. http://YOUR_VPS_IP:18080)", text: $tunnelURLDraft).textFieldStyle(.roundedBorder).font(.system(size: 11, design: .monospaced))
+                    SecureField("Tunnel auth key", text: $tunnelKeyDraft).textFieldStyle(.roundedBorder).font(.system(size: 11, design: .monospaced))
                 }
-
-                if step == 2 || step == 3 {
-                    TextField("VPS IP for snippets (optional)", text: $serverIP)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                }
-
                 if step == 2 {
-                    CodeSnippet(
-                        filename: "Upload to VPS",
-                        code: uploadSnippet,
-                        accent: accent
-                    )
+                    if authKeyConfirmed {
+                        ConfirmedHint(text: "Auth key embedded. Copy generated CodeFull.gs.", accent: accent, onChange: { authKeyConfirmed = false })
+                        CodeSnippet(filename: "CodeFull.gs", code: renderedCodeFull(), accent: accent)
+                    } else {
+                        AuthKeyPrompt(authKey: $authKeyDraft, accent: accent) { authKeyConfirmed = true }
+                    }
+                    Link(destination: URL(string: "https://script.google.com/home/projects/create")!) {
+                        Label("https://script.google.com/home/projects/create", systemImage: "arrow.up.right.square").font(.system(size: 11, weight: .medium))
+                    }
+                }
+                if step == 4 {
+                    TextField("Deployment ID (AKfycb...)", text: $deploymentIDDraft).textFieldStyle(.roundedBorder).font(.system(size: 11, design: .monospaced))
+                    if autoAddedScriptID == deploymentIDDraft.trimmingCharacters(in: .whitespacesAndNewlines), !deploymentIDDraft.isEmpty {
+                        Text("Profile added automatically. You can Start now.").font(.system(size: 11)).foregroundStyle(.green)
+                    }
                 }
 
-                if step == 3 {
-                    CodeSnippet(
-                        filename: "One-command VPS install",
-                        code: installSnippet,
-                        accent: accent
-                    )
-                }
-
-                StepNavBar(
-                    step: $step,
-                    total: steps.count,
-                    accent: accent,
-                    nextDisabled: step == 1 && bundleURL == nil
-                )
+                StepNavBar(step: $step, total: steps.count, accent: accent, nextDisabled: step == 2 && !authKeyConfirmed)
             }
         }
+        .onChange(of: step) { _ in tryAutoAddProfile() }
     }
 
-    private func buildPackage() {
-        isBuilding = true
-        buildError = nil
-        Task {
-            do {
-                let result = try ExitRelayPackager.buildPackage(exportInstructions: exportInstructions)
-                await MainActor.run {
-                    self.bundleURL = result.bundleURL
-                    self.instructionsURL = result.instructionsURL
-                    self.isBuilding = false
-                    ExitRelayPackager.revealInFinder(result.bundleURL)
-                }
-            } catch {
-                await MainActor.run {
-                    self.buildError = error.localizedDescription
-                    self.isBuilding = false
-                }
-            }
+    private var fullTunnelVPSSnippet: String {
+        """
+        curl https://sh.rustup.rs -sSf | sh -s -- -y
+        source "$HOME/.cargo/env"
+        git clone https://github.com/therealaleph/MasterHttpRelayVPN-RUST.git
+        cd MasterHttpRelayVPN-RUST/tunnel-node
+        cargo build --release
+        export TUNNEL_KEY='REPLACE_WITH_A_RANDOM_HEX_KEY'
+        TUNNEL_AUTH_KEY="$TUNNEL_KEY" PORT=18080 nohup ./target/release/tunnel-node >/var/log/tunnel-node.log 2>&1 &
+        curl -i http://127.0.0.1:18080/health
+        """
+    }
+
+    private func renderedCodeFull() -> String {
+        let auth = authKeyDraft.replacingOccurrences(of: "\"", with: "\\\"")
+        let tURL = tunnelURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tKey = tunnelKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return codeGS_Full
+            .replacingOccurrences(of: "CHANGE_ME_TO_A_STRONG_SECRET", with: auth)
+            .replacingOccurrences(of: "https://YOUR_TUNNEL_NODE_URL", with: tURL.isEmpty ? "https://YOUR_TUNNEL_NODE_URL" : tURL.replacingOccurrences(of: "\"", with: "\\\""))
+            .replacingOccurrences(of: "YOUR_TUNNEL_AUTH_KEY", with: tKey.isEmpty ? "YOUR_TUNNEL_AUTH_KEY" : tKey.replacingOccurrences(of: "\"", with: "\\\""))
+    }
+
+    private func tryAutoAddProfile() {
+        guard step == steps.count - 1 else { return }
+        let sid = deploymentIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = authKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sid.isEmpty, key.count >= 8 else { return }
+        guard autoAddedScriptID != sid else { return }
+        if let idx = app.settings.credentials.firstIndex(where: { $0.scriptID == sid }) {
+            app.settings.credentials[idx].authKey = key
+            app.settings.credentials[idx].usesFullTunnel = true
+            app.settings.credentials[idx].usesCloudflare = false
+            app.settings.credentials[idx].usesValTunnel = false
+            app.settings.activeCredentialID = app.settings.credentials[idx].id
+        } else {
+            let cred = Credential(name: "Full Tunnel Relay", scriptID: sid, authKey: key, usesCloudflare: false, usesFullTunnel: true, usesValTunnel: false)
+            app.settings.credentials.append(cred)
+            app.settings.activeCredentialID = cred.id
         }
+        app.settings.useFullTunnel = true
+        app.saveSettings()
+        autoAddedScriptID = sid
     }
 }
 
