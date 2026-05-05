@@ -95,10 +95,18 @@ struct DashboardView: View {
         !app.settings.authKey.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
+    private var displayHost: String {
+        let h = app.settings.listenHost
+        if h == "0.0.0.0" {
+            return NetworkInfo.primaryLANAddress() ?? "0.0.0.0"
+        }
+        return h
+    }
+
     private var listenerLine: String {
         let httpPort  = app.activeHTTPPort  > 0 ? app.activeHTTPPort  : app.settings.listenPort
         let socksPort = app.activeSOCKSPort > 0 ? app.activeSOCKSPort : app.settings.socksPort
-        let host = app.settings.listenHost
+        let host = displayHost
         return "HTTP \(host):\(httpPort)  ·  SOCKS5 \(host):\(socksPort)"
     }
 
@@ -110,7 +118,7 @@ struct DashboardView: View {
             return "Up \(format(interval: Date().timeIntervalSince(started)))"
         }
         if !canStart { return "Add and select a profile to get started." }
-        return "Ready: SOCKS5/HTTP proxy on \(app.settings.listenHost):\(app.settings.listenPort)."
+        return "Ready: SOCKS5/HTTP proxy on \(displayHost):\(app.settings.listenPort)."
     }
 
     private func startTimer() {
@@ -245,8 +253,8 @@ private struct CredentialsCard: View {
                                     if !lbEnabled && active?.usesCloudflare == true {
                                         CloudflareBadge()
                                     }
-                                    if !lbEnabled && active?.usesFullTunnel == true {
-                                        FullTunnelBadge()
+                                    if !lbEnabled && active?.usesValTunnel == true {
+                                        ValBadge()
                                     }
                                 }
                                 if lbEnabled {
@@ -320,10 +328,6 @@ struct CredentialPickerSheet: View {
     @State private var showAddSheet = false
     @State private var editTarget: Credential? = nil
 
-    private enum RouteTag {
-        case cloudflare, fullTunnel
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -376,23 +380,15 @@ struct CredentialPickerSheet: View {
                     let strategy = app.settings.lbStrategy
                     let isLBon = app.settings.enableLoadBalancing
                     
-                    let fullTagged = app.settings.credentials.filter(\.usesFullTunnel)
-                    let filteredCredentials: [Credential] = {
-                        // When Full Tunnel is enabled, users expect tunnel-capable
-                        // deployments to be selectable regardless of LB strategy.
-                        if app.settings.useFullTunnel, !fullTagged.isEmpty, isLBon {
-                            return fullTagged
+                    let filteredCredentials = app.settings.credentials.filter { cred in
+                        if !isLBon { return true }
+                        switch strategy {
+                        case .cfOnly: return cred.usesCloudflare
+                        case .normalOnly: return !cred.usesCloudflare
+                        case .valOnly: return cred.usesValTunnel
+                        default: return true
                         }
-                        return app.settings.credentials.filter { cred in
-                            if !isLBon { return true }
-                            switch strategy {
-                            case .cfOnly: return cred.usesCloudflare
-                            case .normalOnly: return !cred.usesCloudflare
-                            case .valOnly: return false
-                            default: return true
-                            }
-                        }
-                    }()
+                    }
 
                     ForEach(filteredCredentials) { cred in
                         CredentialRow(
@@ -412,8 +408,18 @@ struct CredentialPickerSheet: View {
                                 app.saveSettings()
                                 if !app.settings.enableLoadBalancing { dismiss() }
                             },
-                            onToggleCloudflare: { setRouteTag(.cloudflare, for: cred.id) },
-                            onToggleFullTunnel: { setRouteTag(.fullTunnel, for: cred.id) },
+                            onToggleCloudflare: {
+                                if let idx = app.settings.credentials.firstIndex(where: { $0.id == cred.id }) {
+                                    app.settings.credentials[idx].usesCloudflare.toggle()
+                                    app.saveSettings()
+                                }
+                            },
+                            onToggleValTunnel: {
+                                if let idx = app.settings.credentials.firstIndex(where: { $0.id == cred.id }) {
+                                    app.settings.credentials[idx].usesValTunnel.toggle()
+                                    app.saveSettings()
+                                }
+                            },
                             onEdit: {
                                 editTarget = cred
                             },
@@ -453,25 +459,6 @@ struct CredentialPickerSheet: View {
                 .environmentObject(app)
         }
     }
-
-    private func setRouteTag(_ tag: RouteTag, for id: UUID) {
-        guard let idx = app.settings.credentials.firstIndex(where: { $0.id == id }) else { return }
-        let currentlyOn: Bool
-        switch tag {
-        case .cloudflare: currentlyOn = app.settings.credentials[idx].usesCloudflare
-        case .fullTunnel: currentlyOn = app.settings.credentials[idx].usesFullTunnel
-        }
-        if currentlyOn {
-            app.settings.credentials[idx].usesCloudflare = false
-            app.settings.credentials[idx].usesFullTunnel = false
-            app.settings.credentials[idx].usesValTunnel = false
-        } else {
-            app.settings.credentials[idx].usesCloudflare = (tag == .cloudflare)
-            app.settings.credentials[idx].usesFullTunnel = (tag == .fullTunnel)
-            app.settings.credentials[idx].usesValTunnel = false
-        }
-        app.saveSettings()
-    }
 }
 
 // MARK: - Credential row
@@ -482,13 +469,13 @@ private struct CredentialRow: View {
     var isLB:       Bool = false
     let onSelect:   () -> Void
     let onToggleCloudflare: () -> Void
-    let onToggleFullTunnel: () -> Void
+    let onToggleValTunnel: () -> Void
     let onEdit:     () -> Void
     let onDelete:   () -> Void
 
     private var accent: Color {
         if credential.usesCloudflare { return .orange }
-        if credential.usesFullTunnel { return .cyan }
+        if credential.usesValTunnel { return .mint }
         return .purple
     }
 
@@ -509,8 +496,8 @@ private struct CredentialRow: View {
                             if credential.usesCloudflare {
                                 CloudflareBadge()
                             }
-                            if credential.usesFullTunnel {
-                                FullTunnelBadge()
+                            if credential.usesValTunnel {
+                                ValBadge()
                             }
                         }
                         Text(credential.scriptID.isEmpty ? "No Script ID set"
@@ -536,16 +523,15 @@ private struct CredentialRow: View {
                 .buttonStyle(.plain)
                 .help(credential.usesCloudflare ? "Remove Cloudflare tag" : "Assign Cloudflare tag")
 
-                Button(action: onToggleFullTunnel) {
+                Button(action: onToggleValTunnel) {
                     TagChipIcon(
-                        icon: "point.3.connected.trianglepath.dotted",
-                        tint: .cyan,
-                        isEnabled: credential.usesFullTunnel
+                        icon: "arrow.turn.up.right",
+                        tint: .mint,
+                        isEnabled: credential.usesValTunnel
                     )
                 }
                 .buttonStyle(.plain)
-                .help(credential.usesFullTunnel ? "Remove Full Tunnel tag" : "Assign Full Tunnel tag")
-
+                .help(credential.usesValTunnel ? "Remove exit tag" : "Assign exit tag")
             }
 
             Button(action: onEdit) {
@@ -590,7 +576,7 @@ struct CredentialEditSheet: View {
     @State private var scriptID: String = ""
     @State private var authKey:  String = ""
     @State private var usesCloudflare: Bool = false
-    @State private var usesFullTunnel: Bool = false
+    @State private var usesValTunnel: Bool = false
     @State private var isAuthKeyVisible: Bool = false
 
     private var isNew: Bool { credential == nil }
@@ -658,28 +644,8 @@ struct CredentialEditSheet: View {
                         .editFieldStyle()
                     }
 
-                    CloudflareToggle(isOn: Binding(
-                        get: { usesCloudflare },
-                        set: { newValue in
-                            if newValue {
-                                usesCloudflare = true
-                                usesFullTunnel = false
-                            } else {
-                                usesCloudflare = false
-                            }
-                        }
-                    ))
-                    FullTunnelToggle(isOn: Binding(
-                        get: { usesFullTunnel },
-                        set: { newValue in
-                            if newValue {
-                                usesFullTunnel = true
-                                usesCloudflare = false
-                            } else {
-                                usesFullTunnel = false
-                            }
-                        }
-                    ))
+                    CloudflareToggle(isOn: $usesCloudflare)
+                    ValTunnelToggle(isOn: $usesValTunnel)
                 }
                 .padding(20)
             }
@@ -691,7 +657,7 @@ struct CredentialEditSheet: View {
                 scriptID       = cred.scriptID
                 authKey        = cred.authKey
                 usesCloudflare = cred.usesCloudflare
-                usesFullTunnel = cred.usesFullTunnel
+                usesValTunnel  = cred.usesValTunnel
             }
         }
     }
@@ -704,26 +670,17 @@ struct CredentialEditSheet: View {
         let resolvedName = name.trimmingCharacters(in: .whitespaces).isEmpty
             ? "Profile \(app.settings.credentials.count + 1)"
             : name
-        var resolvedCloudflare = usesCloudflare
-        var resolvedFullTunnel = usesFullTunnel
-        if resolvedCloudflare {
-            resolvedFullTunnel = false
-        } else if resolvedFullTunnel {
-            resolvedCloudflare = false
-        }
 
         if let existing = credential,
            let idx = app.settings.credentials.firstIndex(where: { $0.id == existing.id }) {
             app.settings.credentials[idx].name           = resolvedName
             app.settings.credentials[idx].scriptID       = scriptID
             app.settings.credentials[idx].authKey        = authKey
-            app.settings.credentials[idx].usesCloudflare = resolvedCloudflare
-            app.settings.credentials[idx].usesFullTunnel = resolvedFullTunnel
-            app.settings.credentials[idx].usesValTunnel  = false
+            app.settings.credentials[idx].usesCloudflare = usesCloudflare
+            app.settings.credentials[idx].usesValTunnel  = usesValTunnel
         } else {
             let cred = Credential(name: resolvedName, scriptID: scriptID, authKey: authKey,
-                                  usesCloudflare: resolvedCloudflare, usesFullTunnel: resolvedFullTunnel,
-                                  usesValTunnel: false)
+                                  usesCloudflare: usesCloudflare, usesValTunnel: usesValTunnel)
             app.settings.credentials.append(cred)
             app.settings.activeCredentialID = cred.id
         }
@@ -920,8 +877,29 @@ struct SystemProxyCard: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-
+                
                 Spacer(minLength: 0)
+
+                if app.settings.useSystemProxy && app.status.isRunning {
+                    // System-proxy uses loopback only when listening locally;
+                    // when LAN-bound, advertise the device's LAN IP.
+                    let host: String = {
+                        let h = app.settings.listenHost
+                        if h == "0.0.0.0" {
+                            return NetworkInfo.primaryLANAddress() ?? "127.0.0.1"
+                        }
+                        return h
+                    }()
+                    let port = app.activeSOCKSPort > 0
+                        ? app.activeSOCKSPort : app.settings.socksPort
+                    Label {
+                        Text(verbatim: "\(host):\(port)")
+                    } icon: {
+                        Image(systemName: "checkmark.circle.fill")
+                    }
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.green)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
@@ -1449,7 +1427,7 @@ struct ClusterPulse: View {
                     isInCurrentPool: currentPoolIDs.contains(cred.scriptID),
                     isStrategyPrimary: app.settings.isLBPulsePrimaryFocus(cred),
                     accent: app.pulseAccent(for: cred),
-                    exitReady: false
+                    exitReady: cred.usesValTunnel
                         && !app.settings.effectiveExitNodePool.isEmpty
                         && app.exitCapableSIDs.contains(cred.scriptID)
                 )
@@ -1533,15 +1511,17 @@ struct PulseDot: View {
 extension LBStrategy {
     /// Whether this strategy predominantly routes through Cloudflare (drives accent color).
     var cfFacing: Bool { self == .cfPreferred || self == .cfOnly }
-    var valFacing: Bool { false }
+    var valFacing: Bool { self == .valPreferred || self == .valOnly }
     /// Visual ordering in the strategy picker: broad/default first, then preferred, then strict-only.
     static var displayOrder: [LBStrategy] {
         [
             .balanced,
             .normalPreferred,
             .cfPreferred,
+            .valPreferred,
             .normalOnly,
             .cfOnly,
+            .valOnly,
         ]
     }
 }
@@ -1562,25 +1542,6 @@ struct CloudflareBadge: View {
         .background(
             Capsule().fill(.orange.opacity(0.15))
                 .overlay(Capsule().stroke(.orange.opacity(0.35), lineWidth: 0.5))
-        )
-        .fixedSize()
-    }
-}
-
-struct FullTunnelBadge: View {
-    var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: "point.3.connected.trianglepath.dotted")
-                .font(.system(size: 8, weight: .bold))
-            Text("Full Tunnel")
-                .font(.system(size: 9, weight: .semibold))
-        }
-        .foregroundStyle(.cyan)
-        .padding(.horizontal, 5)
-        .padding(.vertical, 2)
-        .background(
-            Capsule().fill(.cyan.opacity(0.15))
-                .overlay(Capsule().stroke(.cyan.opacity(0.35), lineWidth: 0.5))
         )
         .fixedSize()
     }
@@ -1648,21 +1609,21 @@ struct CloudflareToggle: View {
     }
 }
 
-struct FullTunnelToggle: View {
+struct ValTunnelToggle: View {
     @Binding var isOn: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "point.3.connected.trianglepath.dotted")
+            Image(systemName: "arrow.turn.up.right")
                 .font(.system(size: 14))
-                .foregroundStyle(isOn ? .cyan : .secondary)
+                .foregroundStyle(isOn ? .mint : .secondary)
                 .frame(width: 18, alignment: .center)
                 .padding(.top, 1)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Full Tunnel capable")
+                Text("Use exit relay")
                     .font(.system(size: 11, weight: .semibold))
-                Text("When enabled for a profile, Shade will treat it as safe for Full Tunnel Mode (expects CodeFull.gs).")
+                Text("When Settings exit routing is on, relay JSON for this profile may include exit relay settings (`en`) for matching hosts. Turn off for profiles that should not use exit.")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1674,15 +1635,15 @@ struct FullTunnelToggle: View {
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .labelsHidden()
-                .tint(.cyan)
+                .tint(.mint)
         }
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isOn ? .cyan.opacity(0.08) : .white.opacity(0.04))
+                .fill(isOn ? .mint.opacity(0.08) : .white.opacity(0.04))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(isOn ? .cyan.opacity(0.3) : .white.opacity(0.06),
+                        .stroke(isOn ? .mint.opacity(0.3) : .white.opacity(0.06),
                                 lineWidth: 1)
                 )
         )

@@ -7,28 +7,22 @@ private enum ExitNodeBlockHeightKey: PreferenceKey {
     }
 }
 
-private enum RightColumnHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
 struct SettingsView: View {
     @EnvironmentObject var app: AppState
+    @State private var draft: AppSettings = .default
+    @State private var saved = false
     @State private var isRepairingCert = false
     @State private var certRepairStatus = ""
-    /// Measured natural height of each side; the larger one drives the matched min-height.
+    /// Matches stacked right column height to measured Exit node column (no dead zone under short cards).
     @State private var exitNodeBlockHeight: CGFloat = 0
-    @State private var rightColumnHeight: CGFloat = 0
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 header
-
+                
                 networkSection
-
+                
                 frontingSection
 
                 googleIPScannerSection
@@ -47,22 +41,15 @@ struct SettingsView: View {
 
                     rightSettingsColumn
                         .frame(minWidth: 0, maxWidth: .infinity)
-                        .background(
-                            GeometryReader { geometry in
-                                Color.clear.preference(
-                                    key: RightColumnHeightKey.self,
-                                    value: geometry.size.height
-                                )
-                            }
-                        )
                 }
                 .onPreferenceChange(ExitNodeBlockHeightKey.self) { exitNodeBlockHeight = $0 }
-                .onPreferenceChange(RightColumnHeightKey.self) { rightColumnHeight = $0 }
 
-                runningHint
+                footer
             }
         }
-        .onChange(of: app.settings) { _ in app.saveSettings() }
+        .onAppear { draft = app.settings }
+        .onChange(of: app.settings.credentials) { _ in syncCredentials() }
+        .onChange(of: app.settings.activeCredentialID) { _ in syncCredentials() }
     }
 
     // MARK: - Sub-views
@@ -71,7 +58,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Settings")
                 .font(.system(size: 22, weight: .bold, design: .rounded))
-            Text("Changes apply automatically. Most also need a Stop → Start to take effect on a running session.")
+            Text("Everything here has sensible defaults. Only touch it if you know why.")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
         }
@@ -79,24 +66,24 @@ struct SettingsView: View {
 
     private var networkSection: some View {
         SettingsCard(title: "Network", icon: "network") {
-            SField(label: "Listen Host", hint: "Bind address for HTTP + SOCKS5") {
-                TextField("127.0.0.1", text: $app.settings.listenHost)
-                    .monoField()
-            }
-            HStack(spacing: 12) {
-                SField(label: "HTTP Port") {
-                    TextField("1080", text: Binding(
-                        get: { String(app.settings.listenPort) },
-                        set: { app.settings.listenPort = Int($0.filter(\.isNumber)) ?? app.settings.listenPort }
-                    ))
-                    .monoField()
-                }
-                SField(label: "SOCKS5 Port") {
-                    TextField("8080", text: Binding(
-                        get: { String(app.settings.socksPort) },
-                        set: { app.settings.socksPort = Int($0.filter(\.isNumber)) ?? app.settings.socksPort }
-                    ))
-                    .monoField()
+            VStack(alignment: .leading, spacing: 12) {
+                NetworkModePicker(listenHost: $draft.listenHost)
+
+                HStack(spacing: 12) {
+                    SField(label: "HTTP Port") {
+                        TextField("1080", text: Binding(
+                            get: { String(draft.listenPort) },
+                            set: { draft.listenPort = Int($0.filter(\.isNumber)) ?? draft.listenPort }
+                        ))
+                        .monoField()
+                    }
+                    SField(label: "SOCKS5 Port") {
+                        TextField("8080", text: Binding(
+                            get: { String(draft.socksPort) },
+                            set: { draft.socksPort = Int($0.filter(\.isNumber)) ?? draft.socksPort }
+                        ))
+                        .monoField()
+                    }
                 }
             }
         }
@@ -106,11 +93,11 @@ struct SettingsView: View {
         SettingsCard(title: "Fronting", icon: "arrow.triangle.branch") {
             HStack(spacing: 12) {
                 SField(label: "Front Domain", hint: "SNI shown to network") {
-                    TextField("www.google.com", text: $app.settings.frontDomain)
+                    TextField("www.google.com", text: $draft.frontDomain)
                         .monoField()
                 }
                 SField(label: "Google IP", hint: "Edge IP for relay") {
-                    TextField("216.239.38.120", text: $app.settings.googleIP)
+                    TextField("216.239.38.120", text: $draft.googleIP)
                         .monoField()
                 }
             }
@@ -122,24 +109,12 @@ struct SettingsView: View {
     }
 
     private var exitNodeSection: some View {
-        SettingsCard(title: "Full Tunnel Servers", icon: "server.rack", expandToFitParent: true) {
-            ExitNodeSettingsPanel(settings: $app.settings)
+        SettingsCard(title: "Exit node", icon: "arrow.turn.up.right") {
+            ExitNodeSettingsPanel(settings: $draft)
         }
-        .frame(
-            maxWidth: .infinity,
-            minHeight: matchedColumnHeight,
-            maxHeight: matchedColumnHeight == 0 ? nil : matchedColumnHeight,
-            alignment: .top
-        )
     }
 
-    /// Both columns match the taller side so the Exit node card visually anchors to the right column when the right column is bigger, and vice-versa.
-    private var matchedColumnHeight: CGFloat {
-        let h = max(exitNodeBlockHeight, rightColumnHeight)
-        return h > 1 ? h : 0
-    }
-
-    /// Advanced + TLS: equal height, stacked on the right.
+    /// Advanced + TLS: equal height when the Exit node column height is known; shared column matches left.
     @ViewBuilder
     private var rightSettingsColumn: some View {
         let pair = VStack(spacing: 14) {
@@ -150,12 +125,12 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .top)
 
-        if matchedColumnHeight > 1 {
+        if exitNodeBlockHeight > 1 {
             pair
                 .frame(
                     maxWidth: .infinity,
-                    minHeight: matchedColumnHeight,
-                    maxHeight: matchedColumnHeight,
+                    minHeight: exitNodeBlockHeight,
+                    maxHeight: exitNodeBlockHeight,
                     alignment: .top
                 )
         } else {
@@ -171,7 +146,7 @@ struct SettingsView: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Picker("", selection: $app.settings.logLevel) {
+                    Picker("", selection: $draft.logLevel) {
                         ForEach(AppSettings.LogLevel.allCases) { l in
                             Text(l.rawValue).tag(l)
                         }
@@ -188,40 +163,58 @@ struct SettingsView: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Toggle("", isOn: $app.settings.verifySSL)
+                    Toggle("", isOn: $draft.verifySSL)
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.mini)
-                }
-
-                Divider().opacity(0.1)
-
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Full Tunnel Mode")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-                        Text("No client certificate needed for shared SOCKS traffic.")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary.opacity(0.7))
-                    }
-                    Spacer()
-                    Toggle("", isOn: $app.settings.useFullTunnel)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.mini)
-                }
-
-                if app.settings.useFullTunnel,
-                   !app.settings.credentials.contains(where: { $0.usesFullTunnel }) {
-                    Text("Full Tunnel expects CodeFull.gs deployments. Tag your Apps Script profiles with \"Full Tunnel capable\" (Dashboard -> chips).")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.yellow.opacity(0.85))
-                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .top)
         }
+    }
+
+    private var loadBalancingSection: some View {
+        SettingsCard(title: "Load Balancing", icon: "square.grid.3x1.below.line.grid.1x2") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Enable LB Mode")
+                        .font(.system(size: 10, weight: .semibold))
+                    Spacer()
+                    Toggle("", isOn: $draft.enableLoadBalancing)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                }
+                
+                Text("Distribute traffic across all selected profiles.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                
+                if draft.enableLoadBalancing {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach($draft.credentials) { $cred in
+                                HStack {
+                                    Image(systemName: cred.isEnabledForLB ? "checkmark.square.fill" : "square")
+                                        .foregroundStyle(cred.isEnabledForLB ? Color.accentColor : .secondary)
+                                    Text(cred.name)
+                                        .font(.system(size: 10))
+                                    Spacer()
+                                }
+                                .padding(4)
+                                .background(.white.opacity(0.03))
+                                .cornerRadius(4)
+                                .onTapGesture {
+                                    cred.isEnabledForLB.toggle()
+                                }
+                            }
+                        }
+                    }
+                    .frame(height: 60)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 140)
     }
 
     private var certificateSection: some View {
@@ -264,16 +257,67 @@ struct SettingsView: View {
         }
     }
 
-    @ViewBuilder
-    private var runningHint: some View {
-        if app.status.isRunning {
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                Text("Changes take effect after Stop → Start.")
+    private var footer: some View {
+        VStack(spacing: 12) {
+            HStack {
+                if saved {
+                    Label("Saved", systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.green)
+                        .transition(.opacity)
+                }
+                Spacer()
+                Button("Revert") { draft = app.settings }
+                    .buttonStyle(.bordered)
+                Button("Save") { doSave() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(settingsDraft == app.settings)
             }
-            .font(.system(size: 12))
-            .foregroundStyle(.yellow)
+
+            if app.status.isRunning {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text("Changes take effect after Stop → Start.")
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(.yellow)
+            }
         }
+    }
+
+    /// A copy of draft with credentials/TUN overwritten — used only for equality check.
+    private var settingsDraft: AppSettings {
+        var s = draft
+        // activeCredentialID is managed by the picker on Dashboard/DashboardView
+        s.activeCredentialID = app.settings.activeCredentialID
+        if !s.exitRoutingAllowed {
+            s.valRelayEnabled = false
+        }
+        return s
+    }
+
+    private func doSave() {
+        var merged = draft
+        // Preserve activeCredentialID which is managed elsewhere
+        merged.activeCredentialID = app.settings.activeCredentialID
+        if !merged.exitRoutingAllowed {
+            merged.valRelayEnabled = false
+        }
+
+        app.settings = merged
+        app.saveSettings()
+        withAnimation { saved = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            withAnimation { saved = false }
+        }
+    }
+
+    private func syncCredentials() {
+        // Keep the master list of credentials in sync, but preserve the draft's toggle state 
+        // if we are currently editing it? Actually, usually simple sync is best.
+        draft.credentials        = app.settings.credentials
+        draft.activeCredentialID = app.settings.activeCredentialID
+        draft.enableLoadBalancing = app.settings.enableLoadBalancing
     }
 }
 
@@ -331,6 +375,143 @@ private struct SField<Content: View>: View {
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - Network mode picker (Local-only / Share on LAN)
+
+private struct NetworkModePicker: View {
+    @Binding var listenHost: String
+
+    private enum Mode: String, CaseIterable, Identifiable {
+        case local, lan, custom
+        var id: String { rawValue }
+    }
+
+    private var mode: Mode {
+        switch listenHost {
+        case "127.0.0.1", "localhost": return .local
+        case "0.0.0.0", "::":          return .lan
+        default:                       return .custom
+        }
+    }
+
+    private var lanIP: String { NetworkInfo.primaryLANAddress() ?? "—" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Access")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text("Who can connect to this proxy.")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary.opacity(0.7))
+
+            HStack(spacing: 8) {
+                ModeTile(
+                    title: "Local only",
+                    subtitle: "127.0.0.1",
+                    icon: "lock.shield.fill",
+                    accent: .blue,
+                    selected: mode == .local
+                ) { listenHost = "127.0.0.1" }
+
+                ModeTile(
+                    title: "Share on LAN",
+                    subtitle: mode == .lan ? lanIP : "All devices",
+                    icon: "wifi",
+                    accent: .green,
+                    selected: mode == .lan
+                ) { listenHost = "0.0.0.0" }
+            }
+
+            if mode == .custom {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .font(.system(size: 10))
+                    Text("Custom bind: \(listenHost)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Reset to Local") { listenHost = "127.0.0.1" }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.blue)
+                }
+                .padding(.horizontal, 8).padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(.orange.opacity(0.08))
+                )
+            } else if mode == .lan {
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.green)
+                        .font(.system(size: 10))
+                    Text("Other devices on your network can use this proxy at ")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    + Text(lanIP)
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.green)
+                    Spacer()
+                }
+            }
+        }
+    }
+}
+
+private struct ModeTile: View {
+    let title: String
+    let subtitle: String
+    let icon: String
+    let accent: Color
+    let selected: Bool
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: icon)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(selected ? accent : .secondary)
+                    Text(title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(selected ? .primary : .secondary)
+                    Spacer()
+                    if selected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(accent)
+                            .font(.system(size: 12))
+                    }
+                }
+                Text(subtitle)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(selected ? accent.opacity(0.12)
+                                   : .white.opacity(hover ? 0.06 : 0.03))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(selected ? accent.opacity(0.45)
+                                              : .white.opacity(0.08),
+                                    lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .animation(.easeOut(duration: 0.12), value: hover)
+        .animation(.easeOut(duration: 0.18), value: selected)
     }
 }
 
