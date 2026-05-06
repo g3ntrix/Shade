@@ -31,7 +31,7 @@
 - **DPI-Resistant Transport**: Uses Google-fronted relay paths for restrictive networks.
 - **Smart Load Balancing**: Distributes relay traffic across multiple deployments for speed and stability.
 - **Native macOS Experience**: SwiftUI dashboard, setup flow, and menu bar controls with live status.
-- **SOCKS5 + UDP Support**: Improved SOCKS handling for real-world mobile apps and browser traffic.
+- **SOCKS5 Support**: Improved SOCKS handling for real-world mobile apps and browser traffic.
 - **IP Scanner**: Built-in scanner to find the best reachable Google frontend IP.
 
 ## Getting Started
@@ -56,27 +56,9 @@
 - Handles config creation so users do not need to manually edit JSON for common paths.
 - Includes improved VPS lifecycle guidance and cleanup instructions.
 
-## Apps Script Modes (Copy/Paste Friendly)
-
-- **`apps_script/Code.gs`**: standard relay mode (works with current normal setup).
-- **`apps_script/CodeFull.gs`**: backward compatible with normal relay mode **and** required for Full Tunnel Mode.
-
-If you use `CodeFull.gs`, set these constants before deploying:
-
-```javascript
-const AUTH_KEY = "YOUR_AUTH_KEY";
-const TUNNEL_SERVER_URL = "https://YOUR_TUNNEL_NODE_URL";
-const TUNNEL_AUTH_KEY = "YOUR_TUNNEL_AUTH_KEY";
-```
-
-Compatibility notes:
-
-- `CodeFull.gs` still supports regular single/batch relay payloads used by normal mode.
-- Exit-node (`en`) requests are also supported in `CodeFull.gs`.
-- Full Tunnel Mode in Shade requires a deployment built from `CodeFull.gs` (old `Code.gs` returns `bad url` for tunnel ops).
-
 ## Technical Snapshot
 
+- **System Requirement**: macOS 13 or newer.
 - **Local Ports**: HTTP (`1080`), SOCKS5 (`8080`) by default.
 - **Architecture**: Universal binary with native support for Apple Silicon and Intel.
 - **Security**: TLS-protected transport through Google-fronted relay paths.
