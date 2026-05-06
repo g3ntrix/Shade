@@ -1289,6 +1289,54 @@ class DomainFronter:
             payload["d"] = base64.b64encode(data).decode()
         return await self._post_script_json(payload, sid=sid_hint)
 
+    async def tunnel_batch(self, ops: list[dict], script_id: str | None = None) -> list[dict]:
+        """Send a batch of tunnel ops (TCP or UDP) through the existing
+        Apps-Script-fronted transport to the tunnel-node.
+
+        ``ops`` is a list of dicts shaped like the Rust ``BatchOp``:
+            {"op": "udp_open", "sid": "...", "host": "...", "port": 443, "d": "<b64>"}
+            {"op": "udp_data", "sid": "...", "d": "<b64>"}
+            {"op": "close",    "sid": "..."}
+
+        Returns the parsed ``r[]`` array (one ``TunnelResponse`` per op):
+            [{"sid": "...", "pkts": ["<b64>", ...], "eof": false,
+              "e": null,  "code": null}, ...]
+
+        Errors surface either as a single-element list with ``e`` set or as
+        a per-op ``e``. Caller is responsible for matching by index.
+
+        ``script_id`` pins the batch to a specific Apps Script deployment
+        so a long-lived UDP ASSOCIATE keeps using the same auth key and
+        tunnel-node session map. Falls back to a hashed pick if omitted.
+        """
+        if not ops:
+            return []
+        sid_hint = script_id or self._script_id_for_key()
+        payload: dict[str, object] = {
+            "k": self._script_keys.get(sid_hint, ""),
+            "t": "batch",
+            "ops": ops,
+        }
+        resp = await self._post_script_json(payload, sid=sid_hint)
+        if "e" in resp and "r" not in resp:
+            # Whole-batch error from Apps Script or tunnel-node — propagate
+            # as a per-op error so the caller doesn't crash on missing keys.
+            return [{"e": resp.get("e"), "code": resp.get("code")}] * len(ops)
+        results = resp.get("r")
+        if not isinstance(results, list):
+            return [{"e": "bad batch response"}] * len(ops)
+        # Pad / truncate to len(ops) so caller can zip safely.
+        if len(results) < len(ops):
+            results = list(results) + [{"e": "missing op result"}] * (len(ops) - len(results))
+        return results[: len(ops)]
+
+    def pick_script_id(self) -> str:
+        """Public helper: pick a script_id for a long-lived tunnel session
+        (e.g. SOCKS5 UDP ASSOCIATE). Returns "" if no scripts configured."""
+        if not self._script_ids:
+            return ""
+        return self._script_id_for_key()
+
     async def _post_script_json(self, payload: dict, sid: str) -> dict:
         path = self._exec_path_for_sid(sid)
         body = json.dumps(payload).encode()

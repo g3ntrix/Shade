@@ -42,6 +42,7 @@ from constants import (
     UNCACHEABLE_HEADER_NAMES,
 )
 from domain_fronter import DomainFronter
+from udp_socks_relay import handle_udp_associate
 
 log = logging.getLogger("Proxy")
 
@@ -714,8 +715,7 @@ class ProxyServer:
 
             req_hdr = await asyncio.wait_for(reader.readexactly(4), timeout=10)
             ver, cmd, _, atyp = req_hdr
-            if ver != 5 or cmd != 1:
-                # Only CONNECT is supported.
+            if ver != 5:
                 writer.write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
                 await writer.drain()
                 return
@@ -737,13 +737,38 @@ class ProxyServer:
 
             port_raw = await asyncio.wait_for(reader.readexactly(2), timeout=10)
             port = (port_raw[0] << 8) | port_raw[1]
-            log.info("SOCKS5 CONNECT → %s:%d", host, port)
+            if cmd == 0x01:  # CONNECT
+                log.info("SOCKS5 CONNECT → %s:%d", host, port)
 
-            # Success reply: BND.ADDR/BND.PORT are set to zeroes.
-            writer.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+                # Success reply: BND.ADDR/BND.PORT are set to zeroes.
+                writer.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+                await writer.drain()
+
+                await self._do_socks5_tunnel(host, port, reader, writer, addr)
+                return
+
+            if cmd == 0x03:  # UDP ASSOCIATE
+                bind_ip = "0.0.0.0"
+                local_sock = writer.get_extra_info("sockname")
+                if isinstance(local_sock, tuple) and local_sock:
+                    bind_ip = str(local_sock[0])
+                if bind_ip in {"::", "::1"}:
+                    bind_ip = "0.0.0.0"
+
+                log.info("SOCKS5 UDP ASSOCIATE from %s requested %s:%d (bind=%s)",
+                         addr, host, port, bind_ip)
+                await handle_udp_associate(
+                    self.fronter,
+                    control_reader=reader,
+                    control_writer=writer,
+                    bind_ip=bind_ip,
+                )
+                return
+
+            # Command not supported.
+            writer.write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
             await writer.drain()
-
-            await self._do_socks5_tunnel(host, port, reader, writer, addr)
+            return
         except asyncio.TimeoutError:
             log.debug("SOCKS5 timeout: %s", addr)
         except asyncio.IncompleteReadError:
