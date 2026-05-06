@@ -1,6 +1,6 @@
 import Foundation
 
-enum ValtownTemplate {
+enum HostedExitRelayTemplate {
     private static let pskPlaceholderLine = #"const PSK = "CHANGE_ME_TO_A_STRONG_SECRET";"#
     private static let fallbackTemplate = #"""
 const PSK = "CHANGE_ME_TO_A_STRONG_SECRET";
@@ -77,7 +77,7 @@ export default async function (req) {
 """#
 
     static func load() -> String {
-        if let url = Bundle.main.url(forResource: "valtown.template", withExtension: "ts"),
+        if let url = Bundle.main.url(forResource: "hosted-exit-relay.template", withExtension: "ts"),
            let s = try? String(contentsOf: url, encoding: .utf8) {
             return s
         }

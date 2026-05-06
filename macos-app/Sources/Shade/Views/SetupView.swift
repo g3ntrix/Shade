@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// Top-level setup wizard: Apps Script, Cloudflare Worker, and Exit Relay (VPS).
+/// Top-level setup wizard: Apps Script, Cloudflare Worker, and tunnel-node on a VPS (Docker; install script clears legacy systemd + prior tunnel containers).
 struct SetupView: View {
     enum Mode { case chooser, appsScript, cloudflare, exitRelay }
     @State private var mode: Mode = .chooser
@@ -40,7 +40,7 @@ private struct SetupChooserView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Setup Guide")
                         .font(.system(size: 28, weight: .bold, design: .rounded))
-                    Text("Pick your main relay path. Exit Relay is provider-agnostic and works with your own VPS.")
+                    Text("Pick your main relay path. Full tunnel uses tunnel-node on your VPS (one install script) with CodeFull.gs.")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -68,9 +68,9 @@ private struct SetupChooserView: View {
                     }
 
                     ChooserCard(
-                        title: "Exit Relay",
-                        subtitle: "Optional, VPS package guide",
-                        details: "Build a ready-to-upload package, run copy-paste install commands on your VPS, then add Relay URL + PSK in Settings → Exit node.",
+                        title: "Tunnel node (VPS)",
+                        subtitle: "Full tunnel — Docker",
+                        details: "Docker installs tunnel-node on the first free port in a safe range, then you deploy Apps Script and paste your Deployment ID.",
                         icon: "server.rack",
                         accent: .teal
                     ) {
@@ -557,17 +557,24 @@ private struct CloudflareSetupView: View {
     }
 }
 
-// MARK: - Exit relay (self-hosted VPS)
+// MARK: - Tunnel node on VPS (Docker, dynamic port)
 
 private struct VPSExitNodeSetupView: View {
+    private enum TunnelPorts {
+        static let scanStart = 18_080
+        static let scanEnd = 18_199
+    }
+
+    @EnvironmentObject var app: AppState
     let onBack: () -> Void
     @State private var step: Int = 0
-    @State private var bundleURL: URL? = nil
-    @State private var instructionsURL: URL? = nil
-    @State private var isBuilding = false
-    @State private var buildError: String? = nil
     @State private var serverIP: String = ""
-    @State private var exportInstructions = true
+    @State private var tunnelListenPortDraft: String = "18080"
+    @State private var relayAuthKeyDraft: String = SetupRandom.hexKey()
+    @State private var tunnelAuthKeyDraft: String = SetupRandom.hexKey()
+    @State private var deploymentIDDraft: String = ""
+    @State private var profileNameDraft: String = ""
+    @State private var profileSaved: Bool = false
 
     private let accent: Color = .teal
 
@@ -576,52 +583,56 @@ private struct VPSExitNodeSetupView: View {
             title: "What this does",
             body:
                 """
-                Shade can package the Exit Relay for you in one click. You upload one file,
-                run one install command on the VPS, and the installer prints Relay URL + PSK.
+                How it works:
 
-                No manual editing of server.js or ecosystem files is required.
-                """
-        ),
-        .init(
-            title: "Create bundle on this Mac",
-            body:
-                """
-                Click Create Exit Relay Bundle. Shade will generate:
-                - a .tgz bundle to upload to your VPS
-                - a setup .txt guide next to that bundle
+                  Your apps → Shade → Google Apps Script → your VPS tunnel node → internet
 
-                Then Shade opens Finder on the generated files.
-                """
-        ),
-        .init(
-            title: "Upload bundle to VPS",
-            body:
-                """
-                Copy-paste the upload command below. It sends the bundle to /root on your VPS.
-                """
-        ),
-        .init(
-            title: "One-command install on VPS",
-            body:
-                """
-                Copy-paste the install command below. The installer automatically:
-                - installs Node.js and PM2 if needed
-                - picks a free relay port (starts at 18081)
-                - generates a strong PSK
-                - starts and persists the service with PM2
-                - prints Relay URL and Exit PSK
-                """
-        ),
-        .init(
-            title: "Use output in Shade",
-            body:
-                """
-                In Shade: Settings -> Exit node -> +
-                - Relay URL: paste installer output
-                - PSK: paste installer output
+                You will do three things:
 
-                Enable exit relay routing, then Disconnect and Connect.
+                  1) Run one install script on the VPS
+                  2) Deploy one Google Apps Script (we generate it for you)
+                  3) Paste the Deployment ID back into Shade
                 """
+        ),
+        .init(
+            title: "Install the tunnel node on your VPS",
+            body:
+                """
+                1) Enter your VPS public IP or hostname below.
+
+                2) Paste the install script on the VPS (Docker required).
+                   It will pick a free port in \(TunnelPorts.scanStart) to \(TunnelPorts.scanEnd) and print TUNNEL_PORT.
+
+                3) If the printed TUNNEL_PORT is not 18080, update the Tunnel port field here to match.
+
+                4) Open that TCP port in your cloud firewall.
+                """
+        ),
+        .init(
+            title: "Deploy the Apps Script",
+            body:
+                """
+                1) Open script.google.com and create a New project.
+
+                2) Delete everything in Code.gs and paste the generated script below.
+
+                3) Save.
+
+                4) Deploy as a Web app:
+                   - Execute as: Me
+                   - Who has access: Anyone
+                """,
+            link: URL(string: "https://script.google.com/home/projects/create")
+        ),
+        .init(
+            title: "Save the Deployment ID",
+            body:
+                """
+                Copy the Deployment ID (it starts with AKfycb) and paste it below.
+
+                Shade will add the profile and activate Full tunnel for that profile.
+                """,
+            showProfileSave: true
         ),
     ]
 
@@ -629,8 +640,8 @@ private struct VPSExitNodeSetupView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 WizardHeader(
-                    title: "Exit Relay (VPS)",
-                    subtitle: "One-click bundle on Mac, one-command install on VPS.",
+                    title: "Full tunnel (VPS)",
+                    subtitle: "Run one VPS install script, deploy one Apps Script, paste the Deployment ID.",
                     onBack: onBack,
                     accent: accent
                 )
@@ -640,29 +651,175 @@ private struct VPSExitNodeSetupView: View {
         }
     }
 
+    private var trimmedVPSInput: String {
+        serverIP.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private var targetHost: String {
-        let t = serverIP.trimmingCharacters(in: .whitespacesAndNewlines)
+        let t = trimmedVPSInput
         return t.isEmpty ? "YOUR_VPS_IP" : t
     }
 
-    private var uploadSnippet: String {
-        guard let bundleURL else {
-            return "Create the bundle first in step 2."
+    /// Host part for display (no scheme, no path); strips optional :port for labeling.
+    private var targetHostLabel: String {
+        var h = trimmedVPSInput
+        if h.isEmpty { return "VPS" }
+        if let r = h.range(of: "://") { h = String(h[r.upperBound...]) }
+        if let idx = h.firstIndex(of: "/") { h = String(h[..<idx]) }
+        h = h.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if let colon = h.lastIndex(of: ":"),
+           h[h.index(after: colon)...].allSatisfy(\.isNumber) {
+            return String(h[..<colon])
         }
-        let fileName = bundleURL.lastPathComponent
-        return "scp \"$HOME/Desktop/\(fileName)\" root@\(targetHost):/root/"
+        return h
     }
 
-    private var installSnippet: String {
-        guard let bundleURL else {
-            return "Create the bundle first in step 2."
+    /// Port for TUNNEL_SERVER_URL when the user does not type host:port in the IP field.
+    private var effectiveTunnelPortForURL: String {
+        let t = tunnelListenPortDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let p = Int(t), (1024...65_535).contains(p) { return "\(p)" }
+        return "\(TunnelPorts.scanStart)"
+    }
+
+    private var normalizedTunnelBaseURL: String {
+        var h = trimmedVPSInput
+        if h.isEmpty { return "http://YOUR_VPS_IP:\(effectiveTunnelPortForURL)" }
+        if let r = h.range(of: "://") { h = String(h[r.upperBound...]) }
+        if let idx = h.firstIndex(of: "/") { h = String(h[..<idx]) }
+        h = h.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let hostPart: String
+        let portPart: String
+        if let colon = h.lastIndex(of: ":"),
+           h[h.index(after: colon)...].allSatisfy(\.isNumber) {
+            hostPart = String(h[..<colon])
+            portPart = String(h[h.index(after: colon)...])
+        } else {
+            hostPart = h
+            portPart = effectiveTunnelPortForURL
         }
-        let ip = serverIP.trimmingCharacters(in: .whitespacesAndNewlines)
-        let inner = "cd /root && tar -xzf \(bundleURL.lastPathComponent) && bash /root/shade-exit-relay/install.sh"
-        if ip.isEmpty {
-            return inner
-        }
-        return "ssh root@\(ip) '\(inner)'"
+        return "http://\(hostPart):\(portPart)"
+    }
+
+    private var isTunnelPortFieldValid: Bool {
+        guard let p = Int(tunnelListenPortDraft.trimmingCharacters(in: .whitespacesAndNewlines)) else { return false }
+        return (1024...65_535).contains(p)
+    }
+
+    private var canProceedFromInstallStep: Bool {
+        !trimmedVPSInput.isEmpty
+            && isTunnelPortFieldValid
+            && !relayAuthKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !tunnelAuthKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var publicHostForEmbeddedScript: String {
+        if trimmedVPSInput.isEmpty { return "YOUR_PUBLIC_IP" }
+        return targetHostLabel
+    }
+
+    /// Docker + host network; first free port in scan range (avoids Xray etc. on 8080/18080).
+    private var vpsBootstrapScript: String {
+        let key = tunnelAuthKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let escapedKey = key.replacingOccurrences(of: "'", with: "'\\''")
+        let escapedHost = publicHostForEmbeddedScript.replacingOccurrences(of: "'", with: "'\\''")
+        return """
+        set -eu
+        TUNNEL_AUTH_KEY='\(escapedKey)'
+        PUBLIC_HOST='\(escapedHost)'
+        IMAGE='ghcr.io/therealaleph/mhrv-tunnel-node:latest'
+        if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO=sudo; fi
+        # Legacy native install (older wizard): stop, untrack, drop unit file.
+        $SUDO systemctl stop mhrv-tunnel-node 2>/dev/null || true
+        $SUDO systemctl disable mhrv-tunnel-node 2>/dev/null || true
+        $SUDO rm -f /etc/systemd/system/mhrv-tunnel-node.service 2>/dev/null || true
+        $SUDO rm -f /lib/systemd/system/mhrv-tunnel-node.service 2>/dev/null || true
+        $SUDO rm -f /usr/lib/systemd/system/mhrv-tunnel-node.service 2>/dev/null || true
+        $SUDO systemctl daemon-reload 2>/dev/null || true
+        # Prior Docker tunnel-node(s): standard name and any container from this image.
+        $SUDO docker rm -f mhrv-tunnel 2>/dev/null || true
+        _IDS=$($SUDO docker ps -aq --filter ancestor="$IMAGE" 2>/dev/null) || true
+        for _id in $_IDS; do
+          $SUDO docker rm -f "$_id" 2>/dev/null || true
+        done
+        CHOSEN=""
+        for p in $(seq \(TunnelPorts.scanStart) \(TunnelPorts.scanEnd)); do
+          if ! ss -lntp 2>/dev/null | grep -qE ":${p}\\b"; then
+            CHOSEN=$p
+            break
+          fi
+        done
+        if [ -z "${CHOSEN:-}" ]; then
+          echo "error: no free TCP port in \(TunnelPorts.scanStart)-\(TunnelPorts.scanEnd) (ss -lntp)." >&2
+          exit 1
+        fi
+        $SUDO docker pull "$IMAGE"
+        $SUDO docker run -d --name mhrv-tunnel --restart unless-stopped \\
+          --network host \\
+          -e "PORT=${CHOSEN}" \\
+          -e "TUNNEL_AUTH_KEY=${TUNNEL_AUTH_KEY}" \\
+          "$IMAGE"
+        sleep 2
+        set +e
+        HC=$(curl -fsS "http://127.0.0.1:${CHOSEN}/health" 2>/dev/null)
+        set -eu
+        if printf '%s' "$HC" | grep -q ok; then
+          echo "ok: tunnel-node is up on port ${CHOSEN}."
+        else
+          echo "warn: curl http://127.0.0.1:${CHOSEN}/health failed — docker logs mhrv-tunnel"
+        fi
+        echo ""
+        echo "TUNNEL_PORT=${CHOSEN}"
+        echo "Set Tunnel port in Shade to ${CHOSEN} if it differs from the field, then copy CodeFull.gs."
+        echo "TUNNEL_SERVER_URL=http://${PUBLIC_HOST}:${CHOSEN}"
+        echo "Open TCP ${CHOSEN} in your cloud firewall."
+        """
+    }
+
+    private var renderedFullTunnelScript: String {
+        let auth = Self.jsStringLiteral(relayAuthKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines))
+        let tunnel = Self.jsStringLiteral(tunnelAuthKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines))
+        let url = Self.jsStringLiteral(normalizedTunnelBaseURL)
+        return codeGS_FullTunnelTemplate
+            .replacingOccurrences(of: "<<SHADE_AUTH_KEY>>", with: auth)
+            .replacingOccurrences(of: "<<TUNNEL_SERVER_URL>>", with: url)
+            .replacingOccurrences(of: "<<TUNNEL_PSK>>", with: tunnel)
+    }
+
+    private static func jsStringLiteral(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    private func saveTunnelProfile() {
+        let sid = deploymentIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let auth = relayAuthKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tunnelKey = tunnelAuthKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard sid.count >= 8, !auth.isEmpty, !tunnelKey.isEmpty else { return }
+        let name = profileNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Full tunnel \(app.settings.credentials.count + 1)"
+            : profileNameDraft
+        let cred = Credential(
+            name: name,
+            scriptID: sid,
+            authKey: auth,
+            usesCloudflare: false,
+            usesFullTunnel: true,
+            usesExitTag: true
+        )
+        app.settings.credentials.append(cred)
+        app.settings.activeCredentialID = cred.id
+        let baseURL = normalizedTunnelBaseURL
+        let tunnelProf = ExitNodeProfile(
+            name: "Tunnel \(targetHostLabel)",
+            relayURL: baseURL,
+            psk: tunnelKey
+        )
+        app.settings.exitNodeProfiles.append(tunnelProf)
+        app.settings.activeExitNodeProfileID = tunnelProf.id
+        app.settings.exitRoutingAllowed = true
+        app.settings.exitRelayActive = true
+        app.saveSettings()
+        withAnimation { profileSaved = true }
     }
 
     private var stepCard: some View {
@@ -677,107 +834,96 @@ private struct VPSExitNodeSetupView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 if step == 1 {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(bundleURL == nil
-                             ? "Create the bundle here, then continue to upload/install steps."
-                             : "Bundle created. Finder opened — continue to the next step.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                    TextField("VPS public IP or hostname (e.g. 203.0.113.50)", text: $serverIP)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
 
-                        Toggle("Also save setup guide text file", isOn: $exportInstructions)
-                            .toggleStyle(.checkbox)
-                            .font(.system(size: 11))
+                    TextField("Tunnel port (match TUNNEL_PORT printed by script; often 18080)", text: $tunnelListenPortDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
 
-                        if let err = buildError {
-                            Text(err)
-                                .font(.system(size: 10))
-                                .foregroundStyle(.red)
-                        }
-
-                        if isBuilding {
-                            HStack(spacing: 8) {
-                                ProgressView().controlSize(.small)
-                                Text("Building bundle…")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                            }
-                        } else {
-                            Button("Create Exit Relay Bundle") {
-                                buildPackage()
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(accent)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                        }
-
-                        if let bundleURL {
-                            Button("Show in Finder") {
-                                ExitRelayPackager.revealInFinder(bundleURL)
-                            }
-                            .buttonStyle(.plain)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(accent)
-                        }
+                    VStack(alignment: .leading, spacing: 12) {
+                        keyBlock(
+                            title: "AUTH_KEY (Shade + Apps Script)",
+                            binding: $relayAuthKeyDraft,
+                            regenerate: { relayAuthKeyDraft = SetupRandom.hexKey() }
+                        )
+                        keyBlock(
+                            title: "TUNNEL_AUTH_KEY (server + Apps Script)",
+                            binding: $tunnelAuthKeyDraft,
+                            regenerate: { tunnelAuthKeyDraft = SetupRandom.hexKey() }
+                        )
                     }
-                    .frame(maxWidth: 560, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .center)
                     .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .fill(.white.opacity(0.04))
                     )
-                }
 
-                if step == 2 || step == 3 {
-                    TextField("VPS IP for snippets (optional)", text: $serverIP)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
+                    Text("Tunnel base URL used in script: \(normalizedTunnelBaseURL)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    CodeSnippet(
+                        filename: "install-tunnel-node.sh — paste once on the VPS",
+                        code: vpsBootstrapScript,
+                        accent: accent
+                    )
                 }
 
                 if step == 2 {
                     CodeSnippet(
-                        filename: "Upload to VPS",
-                        code: uploadSnippet,
+                        filename: "Code.gs (full tunnel)",
+                        code: renderedFullTunnelScript,
                         accent: accent
                     )
                 }
 
-                if step == 3 {
-                    CodeSnippet(
-                        filename: "One-command VPS install",
-                        code: installSnippet,
-                        accent: accent
+                if s.showProfileSave {
+                    ProfileSavePanel(
+                        accent: accent,
+                        profileName: $profileNameDraft,
+                        deploymentID: $deploymentIDDraft,
+                        authKey: relayAuthKeyDraft,
+                        saved: $profileSaved,
+                        usesCloudflare: false,
+                        onSave: saveTunnelProfile
                     )
+                }
+
+                if let link = s.link {
+                    Link(destination: link) {
+                        Label(link.absoluteString, systemImage: "arrow.up.right.square")
+                            .font(.system(size: 11, weight: .medium))
+                    }
                 }
 
                 StepNavBar(
                     step: $step,
                     total: steps.count,
                     accent: accent,
-                    nextDisabled: step == 1 && bundleURL == nil
+                    nextDisabled: (step == 1 && !canProceedFromInstallStep)
                 )
             }
         }
     }
 
-    private func buildPackage() {
-        isBuilding = true
-        buildError = nil
-        Task {
-            do {
-                let result = try ExitRelayPackager.buildPackage(exportInstructions: exportInstructions)
-                await MainActor.run {
-                    self.bundleURL = result.bundleURL
-                    self.instructionsURL = result.instructionsURL
-                    self.isBuilding = false
-                    ExitRelayPackager.revealInFinder(result.bundleURL)
-                }
-            } catch {
-                await MainActor.run {
-                    self.buildError = error.localizedDescription
-                    self.isBuilding = false
-                }
+    private func keyBlock(title: String, binding: Binding<String>, regenerate: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                Spacer()
+                Button("Regenerate", action: regenerate)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(accent)
             }
+            TextField("", text: binding)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
         }
     }
 }
@@ -1448,6 +1594,309 @@ function _json(obj) {
   }
   out.cap = 2;
   return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
+}
+"""#
+
+
+// CodeFull.gs — keep in sync with apps_script/CodeFull.gs
+private let codeGS_FullTunnelTemplate: String = #"""
+/**
+ * Shade / MasterHttpRelay — Full mode Apps Script
+ *
+ * Supports:
+ *  - Single HTTP relay: {k,m,u,h,b,ct,r}
+ *  - Batch HTTP relay:  {k,q:[...]}
+ *  - Tunnel single op:  {k,t,...}
+ *  - Tunnel batch ops:  {k,t:"batch",ops:[...]}
+ *
+ * Required edits before deploy:
+ *  - AUTH_KEY must match Shade config auth_key
+ *  - TUNNEL_SERVER_URL must point to your tunnel-node
+ *  - TUNNEL_AUTH_KEY must match tunnel-node shared key
+ */
+
+const AUTH_KEY = "<<SHADE_AUTH_KEY>>";
+const TUNNEL_SERVER_URL = "<<TUNNEL_SERVER_URL>>";
+const TUNNEL_AUTH_KEY = "<<TUNNEL_PSK>>";
+
+const SKIP_HEADERS = {
+  host: 1, connection: 1, "content-length": 1,
+  "transfer-encoding": 1, "proxy-connection": 1, "proxy-authorization": 1,
+  "x-forwarded-for": 1, "x-forwarded-host": 1, "x-forwarded-proto": 1,
+  "x-forwarded-port": 1, "x-real-ip": 1, "forwarded": 1, "via": 1,
+};
+
+const SAFE_REPLAY_METHODS = { GET: 1, HEAD: 1, OPTIONS: 1 };
+
+function _fetchViaExitNode(req) {
+  try {
+    var en = req.en;
+    if (!en || typeof en !== "object") return null;
+    var relayUrl = en.relay_url;
+    var exitPsk = en.psk;
+    if (
+      !relayUrl ||
+      typeof relayUrl !== "string" ||
+      !relayUrl.match(/^https?:\/\//i) ||
+      !exitPsk ||
+      typeof exitPsk !== "string"
+    ) {
+      return null;
+    }
+    var inner = {
+      k: exitPsk,
+      u: req.u,
+      m: (req.m || "GET").toUpperCase(),
+    };
+    if (req.h && typeof req.h === "object") inner.h = req.h;
+    if (req.b) inner.b = req.b;
+    var resp = UrlFetchApp.fetch(relayUrl, {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(inner),
+      muteHttpExceptions: true,
+      followRedirects: true,
+    });
+    var text = resp.getContentText();
+    var data = JSON.parse(text);
+    if (data.e) return null;
+    if (typeof data.s !== "number") return null;
+    if (!data.h || typeof data.h !== "object") return null;
+    if (typeof data.b !== "string") return null;
+    return data;
+  } catch (err) {
+    return null;
+  }
+}
+
+function doPost(e) {
+  try {
+    var req = JSON.parse(e.postData.contents);
+    if (req.k !== AUTH_KEY) return _json({ e: "unauthorized" });
+    if (req.t) return _doTunnel(req);
+    if (Array.isArray(req.q)) return _doBatch(req.q);
+    return _doSingle(req);
+  } catch (err) {
+    return _json({ e: String(err) });
+  }
+}
+
+function doGet(e) {
+  return ContentService.createTextOutput("ok")
+    .setMimeType(ContentService.MimeType.TEXT);
+}
+
+function _doTunnel(req) {
+  if (req.t === "batch") {
+    return _doTunnelBatch(req);
+  }
+  var payload = { k: TUNNEL_AUTH_KEY };
+  switch (req.t) {
+    case "connect":
+      payload.op = "connect";
+      payload.host = req.h;
+      payload.port = req.p;
+      break;
+    case "connect_data":
+      payload.op = "connect_data";
+      payload.host = req.h;
+      payload.port = req.p;
+      if (req.d) payload.data = req.d;
+      break;
+    case "data":
+      payload.op = "data";
+      payload.sid = req.sid;
+      if (req.d) payload.data = req.d;
+      break;
+    case "close":
+      payload.op = "close";
+      payload.sid = req.sid;
+      break;
+    default:
+      return _json({ e: "unknown tunnel op: " + req.t, code: "UNSUPPORTED_OP" });
+  }
+  return _forwardTunnelJson("/tunnel", payload, "tunnel node");
+}
+
+function _doTunnelBatch(req) {
+  var ops = req.ops;
+  if (!Array.isArray(ops)) return _json({ e: "bad tunnel batch ops" });
+  var payload = { k: TUNNEL_AUTH_KEY, ops: ops };
+  return _forwardTunnelJson("/tunnel/batch", payload, "tunnel batch");
+}
+
+function _forwardTunnelJson(path, payload, label) {
+  var base = String(TUNNEL_SERVER_URL || "").replace(/\/+$/, "");
+  var url = base + path;
+  var resp = UrlFetchApp.fetch(url, {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+    followRedirects: true,
+  });
+  var status = resp.getResponseCode();
+  if (status !== 200) {
+    var body = "";
+    try { body = resp.getContentText(); } catch (err) {}
+    if (body && body.length > 240) body = body.substring(0, 240);
+    return _json({
+      e: label + " HTTP " + status,
+      u: url,
+      b: body
+    });
+  }
+  return ContentService.createTextOutput(resp.getContentText())
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function _doSingle(req) {
+  if (!req.u || typeof req.u !== "string" || !req.u.match(/^https?:\/\//i)) {
+    return _json({ e: "bad url" });
+  }
+  if (req.en && req.en.relay_url && req.en.psk) {
+    var viaExit = _fetchViaExitNode(req);
+    if (viaExit) {
+      return _json({
+        s: viaExit.s,
+        h: viaExit.h,
+        b: viaExit.b,
+      });
+    }
+  }
+  var opts = _buildOpts(req);
+  var resp = UrlFetchApp.fetch(req.u, opts);
+  return _json({
+    s: resp.getResponseCode(),
+    h: _respHeaders(resp),
+    b: Utilities.base64Encode(resp.getContent()),
+  });
+}
+
+function _doBatch(items) {
+  var results = new Array(items.length);
+  var fetchArgs = [];
+  var fetchIndex = [];
+  var fetchMethods = [];
+  var i;
+  var j;
+
+  for (i = 0; i < items.length; i++) {
+    var item = items[i];
+    if (!item || typeof item !== "object") {
+      results[i] = { e: "bad item" };
+      continue;
+    }
+    if (!item.u || typeof item.u !== "string" || !item.u.match(/^https?:\/\//i)) {
+      results[i] = { e: "bad url" };
+      continue;
+    }
+    if (item.en && item.en.relay_url && item.en.psk) {
+      var viaExit = _fetchViaExitNode(item);
+      if (viaExit) {
+        results[i] = {
+          s: viaExit.s,
+          h: viaExit.h,
+          b: viaExit.b,
+        };
+        continue;
+      }
+    }
+    try {
+      var opts = _buildOpts(item);
+      opts.url = item.u;
+      fetchArgs.push(opts);
+      fetchIndex.push(i);
+      fetchMethods.push(String(item.m || "GET").toUpperCase());
+      results[i] = null;
+    } catch (err) {
+      results[i] = { e: String(err) };
+    }
+  }
+
+  var responses = [];
+  if (fetchArgs.length > 0) {
+    try {
+      responses = UrlFetchApp.fetchAll(fetchArgs);
+    } catch (err) {
+      responses = [];
+      for (j = 0; j < fetchArgs.length; j++) {
+        try {
+          if (!SAFE_REPLAY_METHODS[fetchMethods[j]]) {
+            results[fetchIndex[j]] = { e: "batch fetchAll failed; unsafe method not replayed" };
+            responses[j] = null;
+            continue;
+          }
+          var fallbackReq = fetchArgs[j];
+          var fallbackUrl = fallbackReq.url;
+          var fallbackOpts = {};
+          for (var key in fallbackReq) {
+            if (Object.prototype.hasOwnProperty.call(fallbackReq, key) && key !== "url") {
+              fallbackOpts[key] = fallbackReq[key];
+            }
+          }
+          responses[j] = UrlFetchApp.fetch(fallbackUrl, fallbackOpts);
+        } catch (singleErr) {
+          results[fetchIndex[j]] = { e: String(singleErr) };
+          responses[j] = null;
+        }
+      }
+    }
+  }
+
+  var rIdx = 0;
+  for (i = 0; i < items.length; i++) {
+    if (results[i] !== null) continue;
+    var resp = responses[rIdx++];
+    if (!resp) {
+      if (!results[i]) results[i] = { e: "fetch failed" };
+    } else {
+      results[i] = {
+        s: resp.getResponseCode(),
+        h: _respHeaders(resp),
+        b: Utilities.base64Encode(resp.getContent()),
+      };
+    }
+  }
+  return _json({ q: results });
+}
+
+function _buildOpts(req) {
+  var opts = {
+    method: (req.m || "GET").toLowerCase(),
+    muteHttpExceptions: true,
+    followRedirects: req.r !== false,
+    validateHttpsCertificates: true,
+    escaping: false,
+  };
+  if (req.h && typeof req.h === "object") {
+    var headers = {};
+    for (var k in req.h) {
+      if (req.h.hasOwnProperty(k) && !SKIP_HEADERS[k.toLowerCase()]) {
+        headers[k] = req.h[k];
+      }
+    }
+    opts.headers = headers;
+  }
+  if (req.b) {
+    opts.payload = Utilities.base64Decode(req.b);
+    if (req.ct) opts.contentType = req.ct;
+  }
+  return opts;
+}
+
+function _respHeaders(resp) {
+  try {
+    if (typeof resp.getAllHeaders === "function") {
+      return resp.getAllHeaders();
+    }
+  } catch (err) {}
+  return resp.getHeaders();
+}
+
+function _json(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
 }
 """#
 

@@ -237,15 +237,15 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Accent: mint when this profile uses val exit, routing is on, and the deployment reported exit-aware relay JSON (`cap` ≥ 2).
+    /// Accent: mint when this profile is exit-tagged, routing is on, and the deployment reported exit-aware relay JSON (`cap` ≥ 2).
     func pulseAccent(for credential: Credential) -> Color {
-        if credential.usesValTunnel,
+        if credential.usesExitTag,
            !settings.effectiveExitNodePool.isEmpty,
            exitCapableSIDs.contains(credential.scriptID) {
             return .mint
         }
         if credential.usesCloudflare { return .orange }
-        if credential.usesValTunnel { return .mint }
+        if credential.usesExitTag { return .mint }
         return .purple
     }
 
@@ -383,8 +383,8 @@ final class AppState: ObservableObject {
         let enabled    = settings.credentials.filter { $0.isEnabledForLB }
         let cfPool     = enabled.filter { $0.usesCloudflare }
         let normalPool = enabled.filter { !$0.usesCloudflare }
-        let valPool    = enabled.filter { $0.usesValTunnel }
-        let nonValPool = enabled.filter { !$0.usesValTunnel }
+        let exitTaggedPool    = enabled.filter(\.usesExitTag)
+        let nonExitTaggedPool = enabled.filter { !$0.usesExitTag }
 
         let shouldFallback: Bool
         let message: String
@@ -400,10 +400,10 @@ final class AppState: ObservableObject {
                 && normalPool.allSatisfy { unhealthySIDs.contains($0.scriptID) }
             shouldFallback = allNormalDead && !cfPool.isEmpty
             message = "All Apps Script profiles failed. Falling back to Cloudflare profiles. Restart to try Apps Script again."
-        case .valPreferred:
-            let allValDead = !valPool.isEmpty
-                && valPool.allSatisfy { unhealthySIDs.contains($0.scriptID) }
-            shouldFallback = allValDead && !nonValPool.isEmpty
+        case .exitPreferred:
+            let allExitTaggedDead = !exitTaggedPool.isEmpty
+                && exitTaggedPool.allSatisfy { unhealthySIDs.contains($0.scriptID) }
+            shouldFallback = allExitTaggedDead && !nonExitTaggedPool.isEmpty
             message = "All exit-tagged profiles failed. Falling back to non-exit profiles. Restart to try exit profiles again."
         default:
             return

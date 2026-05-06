@@ -1,20 +1,18 @@
 import SwiftUI
 
-private enum ExitNodeBlockHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
 struct SettingsView: View {
     @EnvironmentObject var app: AppState
-    @State private var draft: AppSettings = .default
-    @State private var saved = false
     @State private var isRepairingCert = false
     @State private var certRepairStatus = ""
-    /// Matches stacked right column height to measured Exit node column (no dead zone under short cards).
-    @State private var exitNodeBlockHeight: CGFloat = 0
+
+    private func savePartial(_ mutate: (inout AppSettings) -> Void) {
+        var s = app.settings
+        mutate(&s)
+        if !s.exitRoutingAllowed { s.exitRelayActive = false }
+        guard s != app.settings else { return }
+        app.settings = s
+        app.saveSettings()
+    }
 
     var body: some View {
         ScrollView {
@@ -28,28 +26,15 @@ struct SettingsView: View {
                 googleIPScannerSection
 
                 HStack(alignment: .top, spacing: 14) {
-                    exitNodeSection
-                        .frame(minWidth: 0, maxWidth: .infinity)
-                        .background(
-                            GeometryReader { geometry in
-                                Color.clear.preference(
-                                    key: ExitNodeBlockHeightKey.self,
-                                    value: geometry.size.height
-                                )
-                            }
-                        )
-
-                    rightSettingsColumn
-                        .frame(minWidth: 0, maxWidth: .infinity)
+                    advancedSection
+                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .top)
+                    certificateSection
+                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .top)
                 }
-                .onPreferenceChange(ExitNodeBlockHeightKey.self) { exitNodeBlockHeight = $0 }
 
                 footer
             }
         }
-        .onAppear { draft = app.settings }
-        .onChange(of: app.settings.credentials) { _ in syncCredentials() }
-        .onChange(of: app.settings.activeCredentialID) { _ in syncCredentials() }
     }
 
     // MARK: - Sub-views
@@ -58,7 +43,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Settings")
                 .font(.system(size: 22, weight: .bold, design: .rounded))
-            Text("Everything here has sensible defaults. Only touch it if you know why.")
+            Text("Everything here has sensible defaults. Changes save automatically.")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
         }
@@ -67,20 +52,34 @@ struct SettingsView: View {
     private var networkSection: some View {
         SettingsCard(title: "Network", icon: "network") {
             VStack(alignment: .leading, spacing: 12) {
-                NetworkModePicker(listenHost: $draft.listenHost)
+                NetworkModePicker(listenHost: Binding(
+                    get: { app.settings.listenHost },
+                    set: { new in
+                        guard app.settings.listenHost != new else { return }
+                        savePartial { $0.listenHost = new }
+                    }
+                ))
 
                 HStack(spacing: 12) {
                     SField(label: "HTTP Port") {
                         TextField("1080", text: Binding(
-                            get: { String(draft.listenPort) },
-                            set: { draft.listenPort = Int($0.filter(\.isNumber)) ?? draft.listenPort }
+                            get: { String(app.settings.listenPort) },
+                            set: { v in
+                                let n = Int(v.filter(\.isNumber)) ?? app.settings.listenPort
+                                guard n != app.settings.listenPort else { return }
+                                savePartial { $0.listenPort = n }
+                            }
                         ))
                         .monoField()
                     }
                     SField(label: "SOCKS5 Port") {
                         TextField("8080", text: Binding(
-                            get: { String(draft.socksPort) },
-                            set: { draft.socksPort = Int($0.filter(\.isNumber)) ?? draft.socksPort }
+                            get: { String(app.settings.socksPort) },
+                            set: { v in
+                                let n = Int(v.filter(\.isNumber)) ?? app.settings.socksPort
+                                guard n != app.settings.socksPort else { return }
+                                savePartial { $0.socksPort = n }
+                            }
                         ))
                         .monoField()
                     }
@@ -93,12 +92,24 @@ struct SettingsView: View {
         SettingsCard(title: "Fronting", icon: "arrow.triangle.branch") {
             HStack(spacing: 12) {
                 SField(label: "Front Domain", hint: "SNI shown to network") {
-                    TextField("www.google.com", text: $draft.frontDomain)
-                        .monoField()
+                    TextField("www.google.com", text: Binding(
+                        get: { app.settings.frontDomain },
+                        set: { new in
+                            guard app.settings.frontDomain != new else { return }
+                            savePartial { $0.frontDomain = new }
+                        }
+                    ))
+                    .monoField()
                 }
                 SField(label: "Google IP", hint: "Edge IP for relay") {
-                    TextField("216.239.38.120", text: $draft.googleIP)
-                        .monoField()
+                    TextField("216.239.38.120", text: Binding(
+                        get: { app.settings.googleIP },
+                        set: { new in
+                            guard app.settings.googleIP != new else { return }
+                            savePartial { $0.googleIP = new }
+                        }
+                    ))
+                    .monoField()
                 }
             }
         }
@@ -108,45 +119,21 @@ struct SettingsView: View {
         GoogleIPScannerCard()
     }
 
-    private var exitNodeSection: some View {
-        SettingsCard(title: "Exit node", icon: "arrow.turn.up.right") {
-            ExitNodeSettingsPanel(settings: $draft)
-        }
-    }
-
-    /// Advanced + TLS: equal height when the Exit node column height is known; shared column matches left.
-    @ViewBuilder
-    private var rightSettingsColumn: some View {
-        let pair = VStack(spacing: 14) {
-            advancedSection
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            certificateSection
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        }
-        .frame(maxWidth: .infinity, alignment: .top)
-
-        if exitNodeBlockHeight > 1 {
-            pair
-                .frame(
-                    maxWidth: .infinity,
-                    minHeight: exitNodeBlockHeight,
-                    maxHeight: exitNodeBlockHeight,
-                    alignment: .top
-                )
-        } else {
-            pair
-        }
-    }
-
     private var advancedSection: some View {
-        SettingsCard(title: "Advanced", icon: "slider.horizontal.3", expandToFitParent: true) {
+        SettingsCard(title: "Advanced", icon: "slider.horizontal.3") {
             VStack(spacing: 12) {
                 HStack {
                     Text("Log Level")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Picker("", selection: $draft.logLevel) {
+                    Picker("", selection: Binding(
+                        get: { app.settings.logLevel },
+                        set: { new in
+                            guard app.settings.logLevel != new else { return }
+                            savePartial { $0.logLevel = new }
+                        }
+                    )) {
                         ForEach(AppSettings.LogLevel.allCases) { l in
                             Text(l.rawValue).tag(l)
                         }
@@ -163,7 +150,13 @@ struct SettingsView: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Toggle("", isOn: $draft.verifySSL)
+                    Toggle("", isOn: Binding(
+                        get: { app.settings.verifySSL },
+                        set: { new in
+                            guard app.settings.verifySSL != new else { return }
+                            savePartial { $0.verifySSL = new }
+                        }
+                    ))
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.mini)
@@ -171,50 +164,6 @@ struct SettingsView: View {
             }
             .frame(maxWidth: .infinity, alignment: .top)
         }
-    }
-
-    private var loadBalancingSection: some View {
-        SettingsCard(title: "Load Balancing", icon: "square.grid.3x1.below.line.grid.1x2") {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Enable LB Mode")
-                        .font(.system(size: 10, weight: .semibold))
-                    Spacer()
-                    Toggle("", isOn: $draft.enableLoadBalancing)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.mini)
-                }
-                
-                Text("Distribute traffic across all selected profiles.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                
-                if draft.enableLoadBalancing {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach($draft.credentials) { $cred in
-                                HStack {
-                                    Image(systemName: cred.isEnabledForLB ? "checkmark.square.fill" : "square")
-                                        .foregroundStyle(cred.isEnabledForLB ? Color.accentColor : .secondary)
-                                    Text(cred.name)
-                                        .font(.system(size: 10))
-                                    Spacer()
-                                }
-                                .padding(4)
-                                .background(.white.opacity(0.03))
-                                .cornerRadius(4)
-                                .onTapGesture {
-                                    cred.isEnabledForLB.toggle()
-                                }
-                            }
-                        }
-                    }
-                    .frame(height: 60)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, minHeight: 140)
     }
 
     private var certificateSection: some View {
@@ -258,22 +207,7 @@ struct SettingsView: View {
     }
 
     private var footer: some View {
-        VStack(spacing: 12) {
-            HStack {
-                if saved {
-                    Label("Saved", systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.green)
-                        .transition(.opacity)
-                }
-                Spacer()
-                Button("Revert") { draft = app.settings }
-                    .buttonStyle(.bordered)
-                Button("Save") { doSave() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(settingsDraft == app.settings)
-            }
-
+        Group {
             if app.status.isRunning {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -283,41 +217,6 @@ struct SettingsView: View {
                 .foregroundStyle(.yellow)
             }
         }
-    }
-
-    /// A copy of draft with credentials/TUN overwritten — used only for equality check.
-    private var settingsDraft: AppSettings {
-        var s = draft
-        // activeCredentialID is managed by the picker on Dashboard/DashboardView
-        s.activeCredentialID = app.settings.activeCredentialID
-        if !s.exitRoutingAllowed {
-            s.valRelayEnabled = false
-        }
-        return s
-    }
-
-    private func doSave() {
-        var merged = draft
-        // Preserve activeCredentialID which is managed elsewhere
-        merged.activeCredentialID = app.settings.activeCredentialID
-        if !merged.exitRoutingAllowed {
-            merged.valRelayEnabled = false
-        }
-
-        app.settings = merged
-        app.saveSettings()
-        withAnimation { saved = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            withAnimation { saved = false }
-        }
-    }
-
-    private func syncCredentials() {
-        // Keep the master list of credentials in sync, but preserve the draft's toggle state 
-        // if we are currently editing it? Actually, usually simple sync is best.
-        draft.credentials        = app.settings.credentials
-        draft.activeCredentialID = app.settings.activeCredentialID
-        draft.enableLoadBalancing = app.settings.enableLoadBalancing
     }
 }
 
@@ -418,9 +317,9 @@ private struct NetworkModePicker: View {
 
                 ModeTile(
                     title: "Share on LAN",
-                    subtitle: mode == .lan ? lanIP : "All devices",
+                    subtitle: mode == .lan ? lanIP : "All interfaces",
                     icon: "wifi",
-                    accent: .green,
+                    accent: .blue,
                     selected: mode == .lan
                 ) { listenHost = "0.0.0.0" }
             }
@@ -444,19 +343,6 @@ private struct NetworkModePicker: View {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(.orange.opacity(0.08))
                 )
-            } else if mode == .lan {
-                HStack(spacing: 6) {
-                    Image(systemName: "info.circle")
-                        .foregroundStyle(.green)
-                        .font(.system(size: 10))
-                    Text("Other devices on your network can use this proxy at ")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                    + Text(lanIP)
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.green)
-                    Spacer()
-                }
             }
         }
     }

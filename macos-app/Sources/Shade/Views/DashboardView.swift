@@ -152,6 +152,10 @@ private struct CredentialsCard: View {
     private var active: Credential? { app.settings.activeCredential }
     private var lbEnabled: Bool { app.settings.enableLoadBalancing }
     private var lbPoolCount: Int { app.settings.effectiveLBPool.count }
+    private var lbIsFullTunnelPool: Bool {
+        app.settings.enableLoadBalancing
+            && app.settings.credentials.contains { $0.isEnabledForLB && $0.usesFullTunnel }
+    }
 
     var body: some View {
         Card {
@@ -164,7 +168,7 @@ private struct CredentialsCard: View {
                         .foregroundStyle(.purple)
                         .frame(width: 60, alignment: .leading)
 
-                    if app.settings.enableLoadBalancing {
+                    if app.settings.enableLoadBalancing && !lbIsFullTunnelPool {
                         PremiumStrategyPicker()
                             .disabled(app.status.isRunning || app.status.isTransitioning)
                             .opacity(app.status.isRunning || app.status.isTransitioning ? 0.6 : 1.0)
@@ -172,6 +176,17 @@ private struct CredentialsCard: View {
                                 insertion: .opacity.combined(with: .scale(scale: 0.9)),
                                 removal: .opacity
                             ))
+                    } else if app.settings.enableLoadBalancing && lbIsFullTunnelPool {
+                        Text("Full tunnel pool")
+                            .font(.system(size: 10, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.mint)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule()
+                                    .fill(.mint.opacity(0.12))
+                                    .overlay(Capsule().stroke(.mint.opacity(0.25), lineWidth: 0.8))
+                            )
                     }
 
                     Spacer(minLength: 4)
@@ -253,8 +268,8 @@ private struct CredentialsCard: View {
                                     if !lbEnabled && active?.usesCloudflare == true {
                                         CloudflareBadge()
                                     }
-                                    if !lbEnabled && active?.usesValTunnel == true {
-                                        ValBadge()
+                                    if !lbEnabled && active?.usesExitTag == true {
+                                        TunnelTagBadge()
                                     }
                                 }
                                 if lbEnabled {
@@ -348,8 +363,13 @@ struct CredentialPickerSheet: View {
             if app.settings.enableLoadBalancing {
                 HStack(spacing: 12) {
                     Button("Select all") {
+                        let anyFull = app.settings.credentials.contains { $0.isEnabledForLB && $0.usesFullTunnel }
                         for i in app.settings.credentials.indices {
-                            app.settings.credentials[i].isEnabledForLB = true
+                            if anyFull {
+                                app.settings.credentials[i].isEnabledForLB = app.settings.credentials[i].usesFullTunnel
+                            } else {
+                                app.settings.credentials[i].isEnabledForLB = !app.settings.credentials[i].usesFullTunnel
+                            }
                         }
                         app.saveSettings()
                     }
@@ -385,7 +405,6 @@ struct CredentialPickerSheet: View {
                         switch strategy {
                         case .cfOnly: return cred.usesCloudflare
                         case .normalOnly: return !cred.usesCloudflare
-                        case .valOnly: return cred.usesValTunnel
                         default: return true
                         }
                     }
@@ -400,6 +419,15 @@ struct CredentialPickerSheet: View {
                             onSelect: {
                                 if app.settings.enableLoadBalancing {
                                     if let idx = app.settings.credentials.firstIndex(where: { $0.id == cred.id }) {
+                                        let turningOn = !app.settings.credentials[idx].isEnabledForLB
+                                        if turningOn {
+                                            let wantsFull = app.settings.credentials[idx].usesFullTunnel
+                                            for j in app.settings.credentials.indices {
+                                                if app.settings.credentials[j].usesFullTunnel != wantsFull {
+                                                    app.settings.credentials[j].isEnabledForLB = false
+                                                }
+                                            }
+                                        }
                                         app.settings.credentials[idx].isEnabledForLB.toggle()
                                     }
                                 } else {
@@ -410,15 +438,15 @@ struct CredentialPickerSheet: View {
                             },
                             onToggleCloudflare: {
                                 if let idx = app.settings.credentials.firstIndex(where: { $0.id == cred.id }) {
-                                    app.settings.credentials[idx].usesCloudflare.toggle()
+                                    let newValue = !app.settings.credentials[idx].usesCloudflare
+                                    app.settings.credentials[idx].usesCloudflare = newValue
+                                    if newValue { app.settings.credentials[idx].usesExitTag = false }
                                     app.saveSettings()
                                 }
                             },
-                            onToggleValTunnel: {
-                                if let idx = app.settings.credentials.firstIndex(where: { $0.id == cred.id }) {
-                                    app.settings.credentials[idx].usesValTunnel.toggle()
-                                    app.saveSettings()
-                                }
+                            onToggleExitTag: {
+                                // Exit tag is only managed by the full-tunnel setup wizard.
+                                return
                             },
                             onEdit: {
                                 editTarget = cred
@@ -469,13 +497,13 @@ private struct CredentialRow: View {
     var isLB:       Bool = false
     let onSelect:   () -> Void
     let onToggleCloudflare: () -> Void
-    let onToggleValTunnel: () -> Void
+    let onToggleExitTag: () -> Void
     let onEdit:     () -> Void
     let onDelete:   () -> Void
 
     private var accent: Color {
         if credential.usesCloudflare { return .orange }
-        if credential.usesValTunnel { return .mint }
+        if credential.usesExitTag { return .mint }
         return .purple
     }
 
@@ -496,8 +524,8 @@ private struct CredentialRow: View {
                             if credential.usesCloudflare {
                                 CloudflareBadge()
                             }
-                            if credential.usesValTunnel {
-                                ValBadge()
+                            if credential.usesExitTag {
+                                TunnelTagBadge()
                             }
                         }
                         Text(credential.scriptID.isEmpty ? "No Script ID set"
@@ -523,15 +551,21 @@ private struct CredentialRow: View {
                 .buttonStyle(.plain)
                 .help(credential.usesCloudflare ? "Remove Cloudflare tag" : "Assign Cloudflare tag")
 
-                Button(action: onToggleValTunnel) {
+                Button(action: onToggleExitTag) {
                     TagChipIcon(
                         icon: "arrow.turn.up.right",
                         tint: .mint,
-                        isEnabled: credential.usesValTunnel
+                        isEnabled: credential.usesExitTag
                     )
                 }
                 .buttonStyle(.plain)
-                .help(credential.usesValTunnel ? "Remove exit tag" : "Assign exit tag")
+                .disabled(true)
+                .opacity(credential.usesExitTag ? 1 : 0.45)
+                .help(
+                    credential.usesFullTunnel
+                        ? "Exit tag is required for full tunnel (Setup wizard)"
+                        : "Exit tag is assigned by the Setup wizard"
+                )
             }
 
             Button(action: onEdit) {
@@ -576,7 +610,7 @@ struct CredentialEditSheet: View {
     @State private var scriptID: String = ""
     @State private var authKey:  String = ""
     @State private var usesCloudflare: Bool = false
-    @State private var usesValTunnel: Bool = false
+    @State private var usesExitTag: Bool = false
     @State private var isAuthKeyVisible: Bool = false
 
     private var isNew: Bool { credential == nil }
@@ -645,7 +679,9 @@ struct CredentialEditSheet: View {
                     }
 
                     CloudflareToggle(isOn: $usesCloudflare)
-                    ValTunnelToggle(isOn: $usesValTunnel)
+                    if credential?.usesFullTunnel == true {
+                        ExitTagToggle(isOn: $usesExitTag, isLocked: true)
+                    }
                 }
                 .padding(20)
             }
@@ -657,7 +693,7 @@ struct CredentialEditSheet: View {
                 scriptID       = cred.scriptID
                 authKey        = cred.authKey
                 usesCloudflare = cred.usesCloudflare
-                usesValTunnel  = cred.usesValTunnel
+                usesExitTag    = cred.usesExitTag || cred.usesFullTunnel
             }
         }
     }
@@ -676,11 +712,18 @@ struct CredentialEditSheet: View {
             app.settings.credentials[idx].name           = resolvedName
             app.settings.credentials[idx].scriptID       = scriptID
             app.settings.credentials[idx].authKey        = authKey
-            app.settings.credentials[idx].usesCloudflare = usesCloudflare
-            app.settings.credentials[idx].usesValTunnel  = usesValTunnel
+            let lockExit = app.settings.credentials[idx].usesFullTunnel
+            app.settings.credentials[idx].usesCloudflare = lockExit ? false : usesCloudflare
+            app.settings.credentials[idx].usesExitTag    = lockExit ? true : usesExitTag
         } else {
-            let cred = Credential(name: resolvedName, scriptID: scriptID, authKey: authKey,
-                                  usesCloudflare: usesCloudflare, usesValTunnel: usesValTunnel)
+            let oneTagCloudflare = usesCloudflare && !usesExitTag
+            let cred = Credential(
+                name: resolvedName,
+                scriptID: scriptID,
+                authKey: authKey,
+                usesCloudflare: oneTagCloudflare,
+                usesExitTag: false
+            )
             app.settings.credentials.append(cred)
             app.settings.activeCredentialID = cred.id
         }
@@ -881,23 +924,12 @@ struct SystemProxyCard: View {
                 Spacer(minLength: 0)
 
                 if app.settings.useSystemProxy && app.status.isRunning {
-                    // System-proxy uses loopback only when listening locally;
-                    // when LAN-bound, advertise the device's LAN IP.
-                    let host: String = {
-                        let h = app.settings.listenHost
-                        if h == "0.0.0.0" {
-                            return NetworkInfo.primaryLANAddress() ?? "127.0.0.1"
-                        }
-                        return h
-                    }()
-                    let port = app.activeSOCKSPort > 0
-                        ? app.activeSOCKSPort : app.settings.socksPort
                     Label {
-                        Text(verbatim: "\(host):\(port)")
+                        Text("Active")
                     } icon: {
                         Image(systemName: "checkmark.circle.fill")
                     }
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.green)
                 }
             }
@@ -1427,7 +1459,7 @@ struct ClusterPulse: View {
                     isInCurrentPool: currentPoolIDs.contains(cred.scriptID),
                     isStrategyPrimary: app.settings.isLBPulsePrimaryFocus(cred),
                     accent: app.pulseAccent(for: cred),
-                    exitReady: cred.usesValTunnel
+                    exitReady: cred.usesExitTag
                         && !app.settings.effectiveExitNodePool.isEmpty
                         && app.exitCapableSIDs.contains(cred.scriptID)
                 )
@@ -1449,7 +1481,7 @@ struct PulseDot: View {
     /// Preferred tier for the current LB strategy (e.g. plain Apps Script under Apps Script First).
     var isStrategyPrimary: Bool = true
     var accent: Color = .purple
-    /// True when val routing is active and this script reported exit-aware relay JSON.
+    /// True when exit routing is active and this script reported exit-aware relay JSON.
     var exitReady: Bool = false
 
     @State private var breathing = false
@@ -1511,17 +1543,14 @@ struct PulseDot: View {
 extension LBStrategy {
     /// Whether this strategy predominantly routes through Cloudflare (drives accent color).
     var cfFacing: Bool { self == .cfPreferred || self == .cfOnly }
-    var valFacing: Bool { self == .valPreferred || self == .valOnly }
     /// Visual ordering in the strategy picker: broad/default first, then preferred, then strict-only.
     static var displayOrder: [LBStrategy] {
         [
             .balanced,
             .normalPreferred,
             .cfPreferred,
-            .valPreferred,
             .normalOnly,
             .cfOnly,
-            .valOnly,
         ]
     }
 }
@@ -1609,8 +1638,10 @@ struct CloudflareToggle: View {
     }
 }
 
-struct ValTunnelToggle: View {
+struct ExitTagToggle: View {
     @Binding var isOn: Bool
+    /// Full tunnel profiles from the VPS wizard always keep the exit tag on.
+    var isLocked: Bool = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -1623,7 +1654,11 @@ struct ValTunnelToggle: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Use exit relay")
                     .font(.system(size: 11, weight: .semibold))
-                Text("When Settings exit routing is on, relay JSON for this profile may include exit relay settings (`en`) for matching hosts. Turn off for profiles that should not use exit.")
+                Text(
+                    isLocked
+                        ? "Full tunnel profiles created in Setup always use this tag for routing."
+                        : "Relay JSON can include exit relay settings (`en`) for matching hosts when tunnel relays are configured."
+                )
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1636,6 +1671,7 @@ struct ValTunnelToggle: View {
                 .controlSize(.mini)
                 .labelsHidden()
                 .tint(.mint)
+                .disabled(isLocked)
         }
         .padding(10)
         .background(
@@ -1647,6 +1683,7 @@ struct ValTunnelToggle: View {
                                 lineWidth: 1)
                 )
         )
+        .opacity(isLocked ? 0.92 : 1)
     }
 }
 
@@ -1723,7 +1760,6 @@ private struct StrategyIconToggle: View {
 
     private var accent: Color {
         if strategy.cfFacing { return .orange }
-        if strategy.valFacing { return .mint }
         return .purple
     }
 

@@ -3,7 +3,7 @@
  *
  * 1) Shade / mhrv-rs exit node (Apps Script second hop): POST JSON with
  *    { k, u, m?, h?, b? } where k must match EXIT_NODE_PSK. Same contract
- *    as valtown.template.ts / deployed val (response { s, h, b } or { e }).
+ *    as hosted-exit-relay.template.ts (response { s, h, b } or { e }).
  *
  * 2) Legacy mhr-vps-worker: POST { u, m?, h?, b? } without k (no PSK).
  *

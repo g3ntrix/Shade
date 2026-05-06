@@ -1362,6 +1362,17 @@ class DomainFronter:
                     return parsed if isinstance(parsed, dict) else {"e": "bad json response"}
                 except Exception:
                     pass
+            head = text[:900].lower()
+            if "<!doctype html" in head or head.startswith("<html") or "<html " in head[:120]:
+                return {
+                    "e": (
+                        "Apps Script returned HTML instead of JSON — full tunnel needs a "
+                        "CodeFull.gs web app (correct Deployment ID), AUTH_KEY matching Code.gs, "
+                        "deploy access “Anyone”, and a reachable google_ip for domain fronting "
+                        "(try Settings → Google IP Scanner). "
+                        f"Preview: {text[:180]!r}"
+                    )
+                }
             return {"e": f"bad json response: {text[:200]}"}
 
     # ── Apps Script relay (apps_script mode) ──────────────────────
