@@ -575,6 +575,7 @@ private struct VPSExitNodeSetupView: View {
     @State private var deploymentIDDraft: String = ""
     @State private var profileNameDraft: String = ""
     @State private var profileSaved: Bool = false
+    @State private var showVPSRemovalSnippet: Bool = false
 
     private let accent: Color = .teal
 
@@ -807,21 +808,19 @@ private struct VPSExitNodeSetupView: View {
         fi
         echo ""
         echo "========================================"
-        echo "  COPY THIS PORT NUMBER INTO SHADE"
-        echo "            ${CHOSEN}"
+        echo "  COPY THIS PORT INTO SHADE"
+        echo "  TUNNEL_PORT = ${CHOSEN}"
         echo "========================================"
         echo "TUNNEL_SERVER_URL=http://${PUBLIC_HOST}:${CHOSEN}"
         echo "Open TCP ${CHOSEN} in your cloud firewall."
         """
     }
 
-    /// Cleanup snippet users can run later to fully remove the deployed tunnel node.
+    /// One-shot cleanup script users can run later to remove the VPS deployment.
     private var vpsRemovalScript: String {
-        let escapedImage = "ghcr.io/therealaleph/mhrv-tunnel-node:latest"
-            .replacingOccurrences(of: "'", with: "'\\''")
-        return """
+        """
         set -euo pipefail
-        IMAGE='\(escapedImage)'
+        IMAGE='ghcr.io/therealaleph/mhrv-tunnel-node:latest'
         if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO=sudo; fi
         $SUDO docker rm -f mhrv-tunnel 2>/dev/null || true
         _IDS=$($SUDO docker ps -aq --filter ancestor="$IMAGE" 2>/dev/null) || true
@@ -834,7 +833,7 @@ private struct VPSExitNodeSetupView: View {
         $SUDO rm -f /lib/systemd/system/mhrv-tunnel-node.service 2>/dev/null || true
         $SUDO rm -f /usr/lib/systemd/system/mhrv-tunnel-node.service 2>/dev/null || true
         $SUDO systemctl daemon-reload 2>/dev/null || true
-        echo "done: tunnel-node deployment cleanup finished."
+        echo "cleanup complete: tunnel deployment removed from this VPS."
         """
     }
 
@@ -932,21 +931,28 @@ private struct VPSExitNodeSetupView: View {
                         accent: accent
                     )
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Remove from VPS (optional)", systemImage: "trash")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                        Text("If you want to uninstall this deployment later, run this cleanup snippet on the VPS.")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                    DisclosureGroup(isExpanded: $showVPSRemovalSnippet) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("If you want to fully remove this tunnel setup, copy and run this cleanup snippet on the VPS.")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            CodeSnippet(
+                                filename: "remove-tunnel-node.sh — optional cleanup",
+                                code: vpsRemovalScript,
+                                accent: .orange
+                            )
+                        }
+                        .padding(.top, 6)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "trash")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.orange)
+                            Text("Optional: remove deployment from VPS later")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
                     }
-
-                    CodeSnippet(
-                        filename: "remove-tunnel-node.sh — cleanup command",
-                        code: vpsRemovalScript,
-                        accent: .red
-                    )
                 }
 
                 if step == 2 {
