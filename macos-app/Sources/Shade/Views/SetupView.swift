@@ -708,8 +708,19 @@ private struct VPSExitNodeSetupView: View {
         return (1024...65_535).contains(p)
     }
 
+    private var isServerInputValid: Bool {
+        validateHostInput(trimmedVPSInput)
+    }
+
+    private var serverInputValidationMessage: String? {
+        let t = trimmedVPSInput
+        if t.isEmpty { return nil }
+        return isServerInputValid ? nil : "Enter a valid IPv4 or hostname (optional :port). Do not include http:// or path."
+    }
+
     private var canProceedFromInstallStep: Bool {
         !trimmedVPSInput.isEmpty
+            && isServerInputValid
             && !relayAuthKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !tunnelAuthKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -852,6 +863,51 @@ private struct VPSExitNodeSetupView: View {
             .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
+    private func validateHostInput(_ raw: String) -> Bool {
+        var h = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if h.isEmpty { return false }
+        if h.contains("://") || h.contains("/") { return false }
+        if h.hasPrefix("[") || h.contains("]") { return false } // keep scope simple: ipv4/hostname only
+        if let colon = h.lastIndex(of: ":"),
+           h[h.index(after: colon)...].allSatisfy(\.isNumber) {
+            let portText = String(h[h.index(after: colon)...])
+            guard let p = Int(portText), (1...65_535).contains(p) else { return false }
+            h = String(h[..<colon])
+        }
+        if h.isEmpty { return false }
+        if h.allSatisfy({ $0.isNumber || $0 == "." }) {
+            // Pure numeric dotted input must be a real IPv4.
+            return isValidIPv4(h)
+        }
+        if isValidIPv4(h) { return true }
+        return isValidHostname(h)
+    }
+
+    private func isValidIPv4(_ host: String) -> Bool {
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return false }
+        for p in parts {
+            guard !p.isEmpty, p.allSatisfy(\.isNumber), let v = Int(p), (0...255).contains(v) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func isValidHostname(_ host: String) -> Bool {
+        if host.count > 253 { return false }
+        if host.hasPrefix("-") || host.hasSuffix("-") { return false }
+        if !host.contains(where: \.isLetter) { return false } // reject numeric-only pseudo-hosts like 2.2
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard !labels.isEmpty else { return false }
+        for l in labels {
+            guard !l.isEmpty, l.count <= 63 else { return false }
+            if l.hasPrefix("-") || l.hasSuffix("-") { return false }
+            guard l.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) else { return false }
+        }
+        return true
+    }
+
     private func saveTunnelProfile() {
         let sid = deploymentIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let auth = relayAuthKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -900,6 +956,12 @@ private struct VPSExitNodeSetupView: View {
                     TextField("VPS IP or hostname (e.g. 203.0.113.50)", text: $serverIP)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12, design: .monospaced))
+                    if let serverInputValidationMessage {
+                        Text(serverInputValidationMessage)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
 
                     VStack(alignment: .leading, spacing: 12) {
                         keyBlock(
