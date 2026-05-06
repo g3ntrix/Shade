@@ -2,15 +2,27 @@
 
 **Shade** is a DPI-resistant macOS proxy client built for censored networks. It combines a high-performance Python core with a native SwiftUI app and routes traffic through **Google Apps Script** and **tunnel-node** transports for reliable browsing and app connectivity.
 
-<p align="center">
-  <img src="macos-app/sc/app-dashboard.png" width="420" alt="Shade App Dashboard" />
-  <img src="macos-app/sc/wizard.png" width="420" alt="Shade Setup Wizard" />
-</p>
-<p align="center">
-  <img src="macos-app/sc/profile.png" width="330" alt="Shade Profile Sharing and Import" />
-  <img src="macos-app/sc/setup-guide.png" width="330" alt="Shade Guided Setup" />
-  <img src="macos-app/sc/menubar.png" width="220" alt="Shade Menu Bar" />
-</p>
+<table align="center">
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="macos-app/sc/app-dashboard.png" width="100%" alt="Shade App Dashboard" />
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="macos-app/sc/wizard.png" width="100%" alt="Shade Setup Wizard" />
+    </td>
+  </tr>
+  <tr>
+    <td width="39%" align="center" valign="top">
+      <img src="macos-app/sc/profile.png" width="100%" alt="Shade Profile Sharing and Import" />
+    </td>
+    <td width="39%" align="center" valign="top">
+      <img src="macos-app/sc/setup-guide.png" width="100%" alt="Shade Guided Setup" />
+    </td>
+    <td width="22%" align="center" valign="top">
+      <img src="macos-app/sc/menubar.png" width="100%" alt="Shade Menu Bar" />
+    </td>
+  </tr>
+</table>
 
 [English] | [فارسی](README_FA.md)
 

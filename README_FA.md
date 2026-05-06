@@ -5,6 +5,8 @@
 <p align="center">
   <img src="macos-app/sc/app-dashboard.png" width="300" alt="Shade App Dashboard" />
   <img src="macos-app/sc/setup-guide.png" width="300" alt="Shade Setup Guide" />
+</p>
+<p align="center">
   <img src="macos-app/sc/menubar.png" width="180" alt="Shade Menu Bar" />
 </p>
 
