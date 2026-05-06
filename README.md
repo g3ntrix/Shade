@@ -1,29 +1,51 @@
 # Shade
 
-**Shade** is a premium, DPI-resistant macOS proxy client designed to route traffic through **Google Apps Script** relays. It combines a high-performance Python core with a modern, native SwiftUI interface to provide a seamless and secure browsing experience.
+**Shade** is a DPI-resistant macOS proxy client built for censored networks. It combines a high-performance Python core with a native SwiftUI app and routes traffic through **Google Apps Script** and **tunnel-node** transports for reliable browsing and app connectivity.
 
 <p align="center">
-  <img src="macos-app/sc/app-dashboard.png" width="300" alt="Shade App Dashboard" />
-  <img src="macos-app/sc/setup-guide.png" width="300" alt="Shade Setup Guide" />
-  <img src="macos-app/sc/menubar.png" width="180" alt="Shade Menu Bar" />
+  <img src="macos-app/sc/app-dashboard.png" width="420" alt="Shade App Dashboard" />
+  <img src="macos-app/sc/wizard.png" width="420" alt="Shade Setup Wizard" />
+</p>
+<p align="center">
+  <img src="macos-app/sc/profile.png" width="330" alt="Shade Profile Sharing and Import" />
+  <img src="macos-app/sc/setup-guide.png" width="330" alt="Shade Guided Setup" />
+  <img src="macos-app/sc/menubar.png" width="220" alt="Shade Menu Bar" />
 </p>
 
 [English] | [فارسی](README_FA.md)
 
 ## Key Features
 
-- **DPI-Resistant Tunneling**: Leverages SNI fronting via Google infrastructure to bypass advanced censorship and regional blocks.
-- **Smart Load Balancing**: Distribute traffic across multiple Apps Script deployments simultaneously to maximize speed and reliability.
-- **Premium Native UI**: A sleek, resource-efficient macOS experience built with SwiftUI, featuring glassmorphism and real-time animations.
-- **Menu Bar Control**: Monitor live speeds and toggle your connection directly from the system menu bar.
-- **Zero-Config Setup**: Automatic SSL certificate installation and system-wide proxy configuration with a single click.
-- **IP Scanner**: Built-in tool to find the fastest reachable Google frontend IP for your specific network.
+- **Easy Setup**: Interactive setup wizard guides you step by step and writes your config automatically.
+- **Full Tunnel Mode**: End-to-end tunnel mode for broader app compatibility, including SOCKS clients on other devices.
+- **Share & Import Profiles**: Export your working profile and import it on another device without manual re-entry.
+- **DPI-Resistant Transport**: Uses Google-fronted relay paths for restrictive networks.
+- **Smart Load Balancing**: Distributes relay traffic across multiple deployments for speed and stability.
+- **Native macOS Experience**: SwiftUI dashboard, setup flow, and menu bar controls with live status.
+- **SOCKS5 + UDP Support**: Improved SOCKS handling for real-world mobile apps and browser traffic.
+- **IP Scanner**: Built-in scanner to find the best reachable Google frontend IP.
 
 ## Getting Started
 
-1. **Deploy Relay**: Deploy the provided `Code.gs` (normal mode) or `CodeFull.gs` (normal + full tunnel mode) to Google Apps Script as a Web App.
-2. **Add Profile**: Paste your **Script ID** and **Auth Key** into Shade.
-3. **Connect**: Hit **Start**. Toggle "Set as system proxy" to route all traffic instantly.
+1. **Open Setup Wizard** in Shade and choose your setup method.
+2. **Deploy Relay**:
+   - Use `apps_script/Code.gs` for standard mode.
+   - Use `apps_script/CodeFull.gs` for standard + full tunnel mode.
+3. **Configure Automatically**: wizard validates inputs and writes config for you.
+4. **Connect**: start Shade and enable system proxy if needed.
+
+## Sharing & Importing Profiles
+
+- Use the app's share/export flow to generate a setup-ready profile from a working configuration.
+- Import that profile on another device to apply script IDs, keys, and related settings quickly.
+- This is the fastest way to replicate a known-good setup across devices and avoid manual mistakes.
+
+## Setup Wizard
+
+- Interactive, guided, and beginner-friendly.
+- Validates server and relay inputs before saving.
+- Handles config creation so users do not need to manually edit JSON for common paths.
+- Includes improved VPS lifecycle guidance and cleanup instructions.
 
 ## Apps Script Modes (Copy/Paste Friendly)
 
@@ -48,7 +70,7 @@ Compatibility notes:
 
 - **Local Ports**: HTTP (`1080`), SOCKS5 (`8080`) by default.
 - **Architecture**: Universal binary with native support for Apple Silicon and Intel.
-- **Security**: Secure TLS 1.3 tunnel to Google's Edge network.
+- **Security**: TLS-protected transport through Google-fronted relay paths.
 
 ---
 
