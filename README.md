@@ -12,14 +12,11 @@
     </td>
   </tr>
   <tr>
-    <td width="37%" align="center" valign="top">
+    <td width="50%" align="center" valign="top">
       <img src="macos-app/sc/profile.png" width="92%" alt="Shade Profile Sharing and Import" />
     </td>
-    <td width="37%" align="center" valign="top">
+    <td width="50%" align="center" valign="top">
       <img src="macos-app/sc/setup-guide.png" width="92%" alt="Shade Guided Setup" />
-    </td>
-    <td width="26%" align="center" valign="top">
-      <img src="macos-app/sc/menubar.png" width="88%" alt="Shade Menu Bar" />
     </td>
   </tr>
 </table>
