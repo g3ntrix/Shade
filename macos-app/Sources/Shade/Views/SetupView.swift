@@ -38,7 +38,7 @@ private struct SetupChooserView: View {
             VStack(alignment: .leading, spacing: 22) {
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Setup Guide")
+                    Text("Setup Wizard")
                         .font(.system(size: 28, weight: .bold, design: .rounded))
                     Text("Pick your main relay path. Full tunnel uses tunnel-node on your VPS (one install script) with CodeFull.gs.")
                         .font(.system(size: 13))
@@ -123,7 +123,7 @@ private struct ChooserCard: View {
                 Spacer(minLength: 4)
 
                 HStack(spacing: 6) {
-                    Text("Start guide")
+                    Text("Start wizard")
                         .font(.system(size: 12, weight: .semibold))
                     Image(systemName: "arrow.right")
                         .font(.system(size: 11, weight: .semibold))
@@ -569,7 +569,7 @@ private struct VPSExitNodeSetupView: View {
     let onBack: () -> Void
     @State private var step: Int = 0
     @State private var serverIP: String = ""
-    @State private var tunnelListenPortDraft: String = "18080"
+    @State private var tunnelListenPortDraft: String = ""
     @State private var relayAuthKeyDraft: String = SetupRandom.hexKey()
     @State private var tunnelAuthKeyDraft: String = SetupRandom.hexKey()
     @State private var deploymentIDDraft: String = ""
@@ -603,22 +603,24 @@ private struct VPSExitNodeSetupView: View {
                 2) Paste the install script on the VPS (Docker required).
                    It will pick a free port in \(TunnelPorts.scanStart) to \(TunnelPorts.scanEnd) and print TUNNEL_PORT.
 
-                3) If the printed TUNNEL_PORT is not 18080, update the Tunnel port field here to match.
+                3) Save the printed TUNNEL_PORT value.
 
                 4) Open that TCP port in your cloud firewall.
                 """
         ),
         .init(
-            title: "Deploy the Apps Script",
+            title: "Set tunnel port and deploy Apps Script",
             body:
                 """
-                1) Open script.google.com and create a New project.
+                1) Enter the TUNNEL_PORT value from the VPS output in the Tunnel port field.
 
-                2) Delete everything in Code.gs and paste the generated script below.
+                2) Open script.google.com and create a New project.
 
-                3) Save.
+                3) Delete everything in Code.gs and paste the generated script below.
 
-                4) Deploy as a Web app:
+                4) Save.
+
+                5) Deploy as a Web app:
                    - Execute as: Me
                    - Who has access: Anyone
                 """,
@@ -707,7 +709,6 @@ private struct VPSExitNodeSetupView: View {
 
     private var canProceedFromInstallStep: Bool {
         !trimmedVPSInput.isEmpty
-            && isTunnelPortFieldValid
             && !relayAuthKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !tunnelAuthKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -723,11 +724,36 @@ private struct VPSExitNodeSetupView: View {
         let escapedKey = key.replacingOccurrences(of: "'", with: "'\\''")
         let escapedHost = publicHostForEmbeddedScript.replacingOccurrences(of: "'", with: "'\\''")
         return """
-        set -eu
+        set -euo pipefail
         TUNNEL_AUTH_KEY='\(escapedKey)'
         PUBLIC_HOST='\(escapedHost)'
         IMAGE='ghcr.io/therealaleph/mhrv-tunnel-node:latest'
         if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO=sudo; fi
+        if ! command -v docker >/dev/null 2>&1; then
+          echo "docker missing: installing docker.io..."
+          $SUDO apt-get update -y
+          $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io
+        fi
+        $SUDO systemctl enable --now containerd 2>/dev/null || true
+        $SUDO systemctl enable --now docker 2>/dev/null || true
+        READY=""
+        for i in $(seq 1 30); do
+          if $SUDO docker info >/dev/null 2>&1; then
+            READY=1
+            break
+          fi
+          if [ "$i" -eq 10 ] || [ "$i" -eq 20 ]; then
+            $SUDO systemctl restart containerd 2>/dev/null || true
+            $SUDO systemctl restart docker 2>/dev/null || true
+          fi
+          sleep 2
+        done
+        if [ -z "${READY:-}" ]; then
+          echo "error: docker is installed but not ready after waiting." >&2
+          echo "check: sudo systemctl status containerd docker" >&2
+          echo "logs: sudo journalctl -u containerd -u docker --no-pager | tail -n 120" >&2
+          exit 1
+        fi
         # Legacy native install (older wizard): stop, untrack, drop unit file.
         $SUDO systemctl stop mhrv-tunnel-node 2>/dev/null || true
         $SUDO systemctl disable mhrv-tunnel-node 2>/dev/null || true
@@ -752,7 +778,19 @@ private struct VPSExitNodeSetupView: View {
           echo "error: no free TCP port in \(TunnelPorts.scanStart)-\(TunnelPorts.scanEnd) (ss -lntp)." >&2
           exit 1
         fi
-        $SUDO docker pull "$IMAGE"
+        PULLED=""
+        for i in $(seq 1 6); do
+          if $SUDO docker pull "$IMAGE"; then
+            PULLED=1
+            break
+          fi
+          echo "warn: docker pull failed (attempt $i/6). retrying in 5s..."
+          sleep 5
+        done
+        if [ -z "${PULLED:-}" ]; then
+          echo "error: failed to pull $IMAGE after retries (network/TLS issue)." >&2
+          exit 1
+        fi
         $SUDO docker run -d --name mhrv-tunnel --restart unless-stopped \\
           --network host \\
           -e "PORT=${CHOSEN}" \\
@@ -768,10 +806,35 @@ private struct VPSExitNodeSetupView: View {
           echo "warn: curl http://127.0.0.1:${CHOSEN}/health failed — docker logs mhrv-tunnel"
         fi
         echo ""
-        echo "TUNNEL_PORT=${CHOSEN}"
-        echo "Set Tunnel port in Shade to ${CHOSEN} if it differs from the field, then copy CodeFull.gs."
+        echo "========================================"
+        echo "  COPY THIS PORT NUMBER INTO SHADE"
+        echo "            ${CHOSEN}"
+        echo "========================================"
         echo "TUNNEL_SERVER_URL=http://${PUBLIC_HOST}:${CHOSEN}"
         echo "Open TCP ${CHOSEN} in your cloud firewall."
+        """
+    }
+
+    /// Cleanup snippet users can run later to fully remove the deployed tunnel node.
+    private var vpsRemovalScript: String {
+        let escapedImage = "ghcr.io/therealaleph/mhrv-tunnel-node:latest"
+            .replacingOccurrences(of: "'", with: "'\\''")
+        return """
+        set -euo pipefail
+        IMAGE='\(escapedImage)'
+        if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO=sudo; fi
+        $SUDO docker rm -f mhrv-tunnel 2>/dev/null || true
+        _IDS=$($SUDO docker ps -aq --filter ancestor="$IMAGE" 2>/dev/null) || true
+        for _id in $_IDS; do
+          $SUDO docker rm -f "$_id" 2>/dev/null || true
+        done
+        $SUDO systemctl stop mhrv-tunnel-node 2>/dev/null || true
+        $SUDO systemctl disable mhrv-tunnel-node 2>/dev/null || true
+        $SUDO rm -f /etc/systemd/system/mhrv-tunnel-node.service 2>/dev/null || true
+        $SUDO rm -f /lib/systemd/system/mhrv-tunnel-node.service 2>/dev/null || true
+        $SUDO rm -f /usr/lib/systemd/system/mhrv-tunnel-node.service 2>/dev/null || true
+        $SUDO systemctl daemon-reload 2>/dev/null || true
+        echo "done: tunnel-node deployment cleanup finished."
         """
     }
 
@@ -795,6 +858,12 @@ private struct VPSExitNodeSetupView: View {
         let auth = relayAuthKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let tunnelKey = tunnelAuthKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard sid.count >= 8, !auth.isEmpty, !tunnelKey.isEmpty else { return }
+        let baseURL = normalizedTunnelBaseURL
+        let tunnelProf = ExitNodeProfile(
+            name: "Tunnel \(targetHostLabel)",
+            relayURL: baseURL,
+            psk: tunnelKey
+        )
         let name = profileNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Full tunnel \(app.settings.credentials.count + 1)"
             : profileNameDraft
@@ -804,16 +873,11 @@ private struct VPSExitNodeSetupView: View {
             authKey: auth,
             usesCloudflare: false,
             usesFullTunnel: true,
-            usesExitTag: true
+            usesExitTag: true,
+            linkedExitNodeProfileID: tunnelProf.id
         )
         app.settings.credentials.append(cred)
         app.settings.activeCredentialID = cred.id
-        let baseURL = normalizedTunnelBaseURL
-        let tunnelProf = ExitNodeProfile(
-            name: "Tunnel \(targetHostLabel)",
-            relayURL: baseURL,
-            psk: tunnelKey
-        )
         app.settings.exitNodeProfiles.append(tunnelProf)
         app.settings.activeExitNodeProfileID = tunnelProf.id
         app.settings.exitRoutingAllowed = true
@@ -835,10 +899,6 @@ private struct VPSExitNodeSetupView: View {
 
                 if step == 1 {
                     TextField("VPS public IP or hostname (e.g. 203.0.113.50)", text: $serverIP)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-
-                    TextField("Tunnel port (match TUNNEL_PORT printed by script; often 18080)", text: $tunnelListenPortDraft)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12, design: .monospaced))
 
@@ -871,14 +931,47 @@ private struct VPSExitNodeSetupView: View {
                         code: vpsBootstrapScript,
                         accent: accent
                     )
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Remove from VPS (optional)", systemImage: "trash")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Text("If you want to uninstall this deployment later, run this cleanup snippet on the VPS.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    CodeSnippet(
+                        filename: "remove-tunnel-node.sh — cleanup command",
+                        code: vpsRemovalScript,
+                        accent: .red
+                    )
                 }
 
                 if step == 2 {
-                    CodeSnippet(
-                        filename: "Code.gs (full tunnel)",
-                        code: renderedFullTunnelScript,
-                        accent: accent
-                    )
+                    HStack(spacing: 8) {
+                        Text("1) Enter TUNNEL_PORT:")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        TextField("e.g. 18080", text: $tunnelListenPortDraft)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12, design: .monospaced))
+                            .frame(width: 110)
+                    }
+
+                    if isTunnelPortFieldValid {
+                        CodeSnippet(
+                            filename: "Code.gs (full tunnel)",
+                            code: renderedFullTunnelScript,
+                            accent: accent
+                        )
+                    } else {
+                        Text("Paste the VPS script first, copy TUNNEL_PORT from its output, then enter it here to generate Code.gs.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
                 if s.showProfileSave {
@@ -904,7 +997,7 @@ private struct VPSExitNodeSetupView: View {
                     step: $step,
                     total: steps.count,
                     accent: accent,
-                    nextDisabled: (step == 1 && !canProceedFromInstallStep)
+                    nextDisabled: (step == 1 && !canProceedFromInstallStep) || (step == 2 && !isTunnelPortFieldValid)
                 )
             }
         }
@@ -1599,7 +1692,7 @@ function _json(obj) {
 
 
 // CodeFull.gs — keep in sync with apps_script/CodeFull.gs
-private let codeGS_FullTunnelTemplate: String = #"""
+let codeGS_FullTunnelTemplate: String = #"""
 /**
  * Shade / MasterHttpRelay — Full mode Apps Script
  *

@@ -14,12 +14,15 @@ struct Credential: Codable, Equatable, Identifiable {
     var usesFullTunnel: Bool = false
     /// Dashboard exit tag: groups this profile for exit-first / exit-only load-balancing.
     var usesExitTag: Bool = false
+    /// When this credential is a full-tunnel profile, points to its tunnel relay entry.
+    var linkedExitNodeProfileID: UUID? = nil
 
     init(id: UUID = UUID(), name: String = "Default",
          scriptID: String = "", authKey: String = "",
          isEnabledForLB: Bool = true, usesCloudflare: Bool = false,
          usesFullTunnel: Bool = false,
-         usesExitTag: Bool = false) {
+         usesExitTag: Bool = false,
+         linkedExitNodeProfileID: UUID? = nil) {
         self.id = id
         self.name = name
         self.scriptID = scriptID
@@ -28,11 +31,12 @@ struct Credential: Codable, Equatable, Identifiable {
         self.usesCloudflare = usesCloudflare
         self.usesFullTunnel = usesFullTunnel
         self.usesExitTag = usesExitTag
+        self.linkedExitNodeProfileID = linkedExitNodeProfileID
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, scriptID, authKey, isEnabledForLB, usesCloudflare, usesFullTunnel
-        case usesExitTag
+        case usesExitTag, linkedExitNodeProfileID
         /// Legacy plist/json field when exit tagging lived under a different property name.
         case legacyExitTagBoolKey = "usesValTunnel"
     }
@@ -49,6 +53,7 @@ struct Credential: Codable, Equatable, Identifiable {
         usesExitTag = (try? c.decode(Bool.self, forKey: .usesExitTag))
             ?? (try? c.decode(Bool.self, forKey: .legacyExitTagBoolKey))
             ?? false
+        linkedExitNodeProfileID = try? c.decode(UUID.self, forKey: .linkedExitNodeProfileID)
         if usesFullTunnel { usesExitTag = true }
     }
 
@@ -62,6 +67,7 @@ struct Credential: Codable, Equatable, Identifiable {
         try c.encode(usesCloudflare, forKey: .usesCloudflare)
         try c.encode(usesFullTunnel, forKey: .usesFullTunnel)
         try c.encode(usesExitTag, forKey: .usesExitTag)
+        try c.encode(linkedExitNodeProfileID, forKey: .linkedExitNodeProfileID)
     }
 }
 

@@ -10,7 +10,7 @@ struct ContentView: View {
         var title: String {
             switch self {
             case .dashboard: return "Dashboard"
-            case .setup:    return "Setup Guide"
+            case .setup:    return "Setup Wizard"
             case .settings: return "Settings"
             case .logs:     return "Logs"
             case .about:    return "About"

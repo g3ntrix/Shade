@@ -25,12 +25,14 @@ struct SettingsView: View {
 
                 googleIPScannerSection
 
+                let pairedCardHeight: CGFloat = 160
                 HStack(alignment: .top, spacing: 14) {
                     advancedSection
                         .frame(minWidth: 0, maxWidth: .infinity, alignment: .top)
                     certificateSection
                         .frame(minWidth: 0, maxWidth: .infinity, alignment: .top)
                 }
+                .frame(maxWidth: .infinity, minHeight: pairedCardHeight, maxHeight: pairedCardHeight, alignment: .top)
 
                 footer
             }
@@ -120,7 +122,7 @@ struct SettingsView: View {
     }
 
     private var advancedSection: some View {
-        SettingsCard(title: "Advanced", icon: "slider.horizontal.3") {
+        SettingsCard(title: "Advanced", icon: "slider.horizontal.3", expandToFitParent: true) {
             VStack(spacing: 12) {
                 HStack {
                     Text("Log Level")

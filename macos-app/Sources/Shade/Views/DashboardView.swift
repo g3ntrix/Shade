@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct DashboardView: View {
     @EnvironmentObject var app: AppState
@@ -152,9 +153,12 @@ private struct CredentialsCard: View {
     private var active: Credential? { app.settings.activeCredential }
     private var lbEnabled: Bool { app.settings.enableLoadBalancing }
     private var lbPoolCount: Int { app.settings.effectiveLBPool.count }
-    private var lbIsFullTunnelPool: Bool {
-        app.settings.enableLoadBalancing
-            && app.settings.credentials.contains { $0.isEnabledForLB && $0.usesFullTunnel }
+    private var activeIsFullTunnel: Bool { active?.usesFullTunnel == true }
+
+    private func enforceNoLBForFullTunnel() {
+        guard activeIsFullTunnel, app.settings.enableLoadBalancing else { return }
+        app.settings.enableLoadBalancing = false
+        app.saveSettings()
     }
 
     var body: some View {
@@ -165,10 +169,10 @@ private struct CredentialsCard: View {
                 HStack(spacing: 8) {
                     Label("Profile", systemImage: "key.fill")
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.purple)
+                        .foregroundStyle(.indigo)
                         .frame(width: 60, alignment: .leading)
 
-                    if app.settings.enableLoadBalancing && !lbIsFullTunnelPool {
+                    if app.settings.enableLoadBalancing && !activeIsFullTunnel {
                         PremiumStrategyPicker()
                             .disabled(app.status.isRunning || app.status.isTransitioning)
                             .opacity(app.status.isRunning || app.status.isTransitioning ? 0.6 : 1.0)
@@ -176,51 +180,16 @@ private struct CredentialsCard: View {
                                 insertion: .opacity.combined(with: .scale(scale: 0.9)),
                                 removal: .opacity
                             ))
-                    } else if app.settings.enableLoadBalancing && lbIsFullTunnelPool {
-                        Text("Full tunnel pool")
-                            .font(.system(size: 10, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.mint)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(
-                                Capsule()
-                                    .fill(.mint.opacity(0.12))
-                                    .overlay(Capsule().stroke(.mint.opacity(0.25), lineWidth: 0.8))
-                            )
                     }
 
                     Spacer(minLength: 4)
-
-                    // Load-balance toggle
-                    HStack(spacing: 6) {
-                        Text("LB")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(app.settings.enableLoadBalancing ? .purple : .secondary)
-                        Toggle("", isOn: Binding(
-                            get: { app.settings.enableLoadBalancing },
-                            set: { newValue in
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
-                                    app.settings.enableLoadBalancing = newValue
-                                }
-                                app.saveSettings()
-                            }
-                        ))
-                        .toggleStyle(.switch)
-                        .controlSize(.mini)
-                        .labelsHidden()
-                    }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(.white.opacity(0.05)))
-                    .disabled(app.status.isRunning || app.status.isTransitioning)
-                    .opacity(app.status.isRunning || app.status.isTransitioning ? 0.6 : 1.0)
 
                     Button {
                         showAddSheet = true
                     } label: {
                         Image(systemName: "plus.circle.fill")
                             .font(.system(size: 14))
-                            .foregroundStyle(.purple)
+                            .foregroundStyle(.indigo)
                     }
                     .buttonStyle(.plain)
                     .help("Add new profile")
@@ -231,6 +200,12 @@ private struct CredentialsCard: View {
                 if let msg = app.lbFallbackMessage {
                     LBFallbackBanner(message: msg)
                         .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+
+                if activeIsFullTunnel {
+                    Text("Load balancing is unavailable for full tunnel profiles.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
                 }
 
                 if app.settings.credentials.isEmpty {
@@ -251,7 +226,7 @@ private struct CredentialsCard: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
-                        .tint(.purple)
+                        .tint(.indigo)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
@@ -271,6 +246,9 @@ private struct CredentialsCard: View {
                                     if !lbEnabled && active?.usesExitTag == true {
                                         TunnelTagBadge()
                                     }
+                                    if !lbEnabled, let active, !active.usesCloudflare, !active.usesExitTag {
+                                        GoogleBadge()
+                                    }
                                 }
                                 if lbEnabled {
                                     Text("\(lbPoolCount) profile(s) in current strategy pool")
@@ -285,9 +263,6 @@ private struct CredentialsCard: View {
                                 }
                             }
                             Spacer()
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(.secondary)
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
@@ -332,6 +307,8 @@ private struct CredentialsCard: View {
             CredentialEditSheet(credential: nil)
                 .environmentObject(app)
         }
+        .onAppear { enforceNoLBForFullTunnel() }
+        .onChange(of: app.settings.activeCredentialID) { _ in enforceNoLBForFullTunnel() }
     }
 }
 
@@ -342,6 +319,8 @@ struct CredentialPickerSheet: View {
     @Environment(\.dismiss) var dismiss
     @State private var showAddSheet = false
     @State private var editTarget: Credential? = nil
+    @State private var transferMessage: String? = nil
+    @State private var pendingVPSImport: PendingVPSImportDraft? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -350,9 +329,13 @@ struct CredentialPickerSheet: View {
                 Text("Profiles")
                     .font(.system(size: 16, weight: .bold, design: .rounded))
                 Spacer()
+                Button("Import JSON") { importProfilesFromJSON() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.indigo)
+                    .font(.system(size: 12, weight: .semibold))
                 Button("Done") { dismiss() }
                     .buttonStyle(.plain)
-                    .foregroundStyle(.purple)
+                    .foregroundStyle(.indigo)
                     .font(.system(size: 13, weight: .semibold))
             }
             .padding(.horizontal, 20)
@@ -360,22 +343,64 @@ struct CredentialPickerSheet: View {
 
             Divider().opacity(0.3)
 
-            if app.settings.enableLoadBalancing {
-                HStack(spacing: 12) {
-                    Button("Select all") {
-                        let anyFull = app.settings.credentials.contains { $0.isEnabledForLB && $0.usesFullTunnel }
-                        for i in app.settings.credentials.indices {
-                            if anyFull {
-                                app.settings.credentials[i].isEnabledForLB = app.settings.credentials[i].usesFullTunnel
-                            } else {
-                                app.settings.credentials[i].isEnabledForLB = !app.settings.credentials[i].usesFullTunnel
+            if let transferMessage {
+                Text(transferMessage)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+            }
+
+            let activeIsFullTunnel = app.settings.activeCredential?.usesFullTunnel == true
+            HStack(spacing: 12) {
+                    HStack(spacing: 6) {
+                        Text("LB")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(app.settings.enableLoadBalancing ? .indigo : .secondary)
+                        Toggle("", isOn: Binding(
+                            get: { app.settings.enableLoadBalancing },
+                            set: { newValue in
+                                if activeIsFullTunnel {
+                                    app.settings.enableLoadBalancing = false
+                                    app.saveSettings()
+                                    return
+                                }
+                                app.settings.enableLoadBalancing = newValue
+                                if newValue {
+                                    let hasNonTunnelSelection = app.settings.credentials.contains {
+                                        $0.isEnabledForLB && !$0.usesFullTunnel
+                                    }
+                                    if !hasNonTunnelSelection,
+                                       let activeID = app.settings.activeCredentialID,
+                                       let idx = app.settings.credentials.firstIndex(where: { $0.id == activeID && !$0.usesFullTunnel }) {
+                                        app.settings.credentials[idx].isEnabledForLB = true
+                                    }
+                                }
+                                app.saveSettings()
                             }
+                        ))
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .labelsHidden()
+                        .disabled(activeIsFullTunnel)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(.white.opacity(0.05)))
+                    .opacity(activeIsFullTunnel ? 0.5 : 1)
+
+                    Button("Select all") {
+                        for i in app.settings.credentials.indices {
+                            app.settings.credentials[i].isEnabledForLB = !app.settings.credentials[i].usesFullTunnel
                         }
+                        app.settings.enableLoadBalancing = true
                         app.saveSettings()
                     }
                     .buttonStyle(.plain)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.purple)
+                    .foregroundStyle(.indigo)
+                    .disabled(activeIsFullTunnel)
+                    .opacity(activeIsFullTunnel ? 0.5 : 1)
 
                     Spacer()
 
@@ -383,6 +408,7 @@ struct CredentialPickerSheet: View {
                         for i in app.settings.credentials.indices {
                             app.settings.credentials[i].isEnabledForLB = false
                         }
+                        app.settings.enableLoadBalancing = false
                         app.saveSettings()
                     }
                     .buttonStyle(.plain)
@@ -392,13 +418,15 @@ struct CredentialPickerSheet: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 8)
 
-                Divider().opacity(0.3)
-            }
+            Divider().opacity(0.3)
 
             ScrollView {
                 VStack(spacing: 8) {
                     let strategy = app.settings.lbStrategy
                     let isLBon = app.settings.enableLoadBalancing
+                    let lbSelected = app.settings.credentials.filter(\.isEnabledForLB)
+                    let lbHasTunnel = lbSelected.contains(where: \.usesFullTunnel)
+                    let lbHasNonTunnel = lbSelected.contains { !$0.usesFullTunnel }
                     
                     let filteredCredentials = app.settings.credentials.filter { cred in
                         if !isLBon { return true }
@@ -410,31 +438,51 @@ struct CredentialPickerSheet: View {
                     }
 
                     ForEach(filteredCredentials) { cred in
+                        let incompatibleWithCurrentLB =
+                            isLBon && ((lbHasTunnel && !cred.usesFullTunnel) || (lbHasNonTunnel && cred.usesFullTunnel))
+                            && !cred.isEnabledForLB
                         CredentialRow(
                             credential: cred,
                             isActive: isLBon
                                 ? cred.isEnabledForLB
                                 : cred.id == app.settings.activeCredential?.id,
                             isLB: isLBon,
+                            isSelectionDisabled: incompatibleWithCurrentLB,
                             onSelect: {
+                                if incompatibleWithCurrentLB { return }
                                 if app.settings.enableLoadBalancing {
                                     if let idx = app.settings.credentials.firstIndex(where: { $0.id == cred.id }) {
-                                        let turningOn = !app.settings.credentials[idx].isEnabledForLB
-                                        if turningOn {
-                                            let wantsFull = app.settings.credentials[idx].usesFullTunnel
+                                        if app.settings.credentials[idx].usesFullTunnel {
                                             for j in app.settings.credentials.indices {
-                                                if app.settings.credentials[j].usesFullTunnel != wantsFull {
-                                                    app.settings.credentials[j].isEnabledForLB = false
-                                                }
+                                                app.settings.credentials[j].isEnabledForLB = false
                                             }
+                                            app.settings.credentials[idx].isEnabledForLB = true
+                                            app.settings.enableLoadBalancing = false
+                                            app.settings.activeCredentialID = app.settings.credentials[idx].id
+                                            app.saveSettings()
+                                            dismiss()
+                                            return
                                         }
                                         app.settings.credentials[idx].isEnabledForLB.toggle()
+                                        let selectedNonTunnel = app.settings.credentials.filter {
+                                            $0.isEnabledForLB && !$0.usesFullTunnel
+                                        }
+                                        if selectedNonTunnel.count <= 1 {
+                                            app.settings.enableLoadBalancing = false
+                                            if let only = selectedNonTunnel.first {
+                                                app.settings.activeCredentialID = only.id
+                                            }
+                                        } else {
+                                            app.settings.enableLoadBalancing = true
+                                        }
                                     }
                                 } else {
                                     app.settings.activeCredentialID = cred.id
+                                    if cred.usesFullTunnel {
+                                        app.settings.enableLoadBalancing = false
+                                    }
                                 }
                                 app.saveSettings()
-                                if !app.settings.enableLoadBalancing { dismiss() }
                             },
                             onToggleCloudflare: {
                                 if let idx = app.settings.credentials.firstIndex(where: { $0.id == cred.id }) {
@@ -444,18 +492,27 @@ struct CredentialPickerSheet: View {
                                     app.saveSettings()
                                 }
                             },
-                            onToggleExitTag: {
-                                // Exit tag is only managed by the full-tunnel setup wizard.
-                                return
-                            },
                             onEdit: {
                                 editTarget = cred
                             },
+                            onExport: {
+                                exportProfileAsJSON(cred)
+                            },
+                            onExportVPSOnly: {
+                                exportVPSSetupOnlyAsJSON(cred)
+                            },
                             onDelete: {
+                                let linkedExitID = cred.linkedExitNodeProfileID
                                 app.settings.credentials.removeAll { $0.id == cred.id }
                                 if app.settings.activeCredentialID == cred.id {
                                     app.settings.activeCredentialID =
                                         app.settings.credentials.first?.id
+                                }
+                                if let linkedExitID {
+                                    app.settings.exitNodeProfiles.removeAll { $0.id == linkedExitID }
+                                    if app.settings.activeExitNodeProfileID == linkedExitID {
+                                        app.settings.activeExitNodeProfileID = app.settings.exitNodeProfiles.first?.id
+                                    }
                                 }
                                 app.saveSettings()
                             }
@@ -472,7 +529,7 @@ struct CredentialPickerSheet: View {
             } label: {
                 Label("Add New Profile", systemImage: "plus.circle.fill")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.purple)
+                    .foregroundStyle(.indigo)
             }
             .buttonStyle(.plain)
             .padding(20)
@@ -486,6 +543,192 @@ struct CredentialPickerSheet: View {
             CredentialEditSheet(credential: nil)
                 .environmentObject(app)
         }
+        .sheet(item: $pendingVPSImport) { draft in
+            ImportedVPSFinalizeSheet(draft: draft) { credential, exitProfile in
+                app.settings.exitNodeProfiles.append(exitProfile)
+                app.settings.credentials.append(credential)
+                app.settings.activeCredentialID = credential.id
+                app.settings.activeExitNodeProfileID = exitProfile.id
+                app.settings.exitRoutingAllowed = true
+                app.settings.exitRelayActive = true
+                app.saveSettings()
+                transferMessage = "Imported VPS setup and saved profile \(credential.name)."
+            }
+            .environmentObject(app)
+        }
+    }
+
+    private func exportProfileAsJSON(_ credential: Credential) {
+        let linkedExit = credential.linkedExitNodeProfileID.flatMap { id in
+            app.settings.exitNodeProfiles.first(where: { $0.id == id })
+        }
+        let payload = ProfileTransferPayload(
+            version: 1,
+            profiles: [
+                .init(
+                    kind: .fullProfile,
+                    name: credential.name,
+                    scriptID: credential.scriptID,
+                    authKey: credential.authKey,
+                    usesCloudflare: credential.usesCloudflare,
+                    usesExitTag: credential.usesExitTag,
+                    usesFullTunnel: credential.usesFullTunnel,
+                    tunnelRelayURL: linkedExit?.relayURL,
+                    tunnelAuthKey: linkedExit?.psk
+                )
+            ]
+        )
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = sanitizedFilename(from: credential.name) + ".json"
+        panel.title = "Export Profile JSON"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let enc = JSONEncoder()
+            enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try enc.encode(payload)
+            try data.write(to: url)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            transferMessage = "Exported \(credential.name) to \(url.lastPathComponent)."
+        } catch {
+            transferMessage = "Export failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func exportVPSSetupOnlyAsJSON(_ credential: Credential) {
+        guard credential.usesFullTunnel,
+              let linkedExitID = credential.linkedExitNodeProfileID,
+              let linkedExit = app.settings.exitNodeProfiles.first(where: { $0.id == linkedExitID }) else {
+            transferMessage = "VPS-only export is available for full tunnel profiles."
+            return
+        }
+        let payload = ProfileTransferPayload(
+            version: 1,
+            profiles: [
+                .init(
+                    kind: .vpsOnly,
+                    name: credential.name,
+                    scriptID: nil,
+                    authKey: credential.authKey,
+                    usesCloudflare: false,
+                    usesExitTag: true,
+                    usesFullTunnel: true,
+                    tunnelRelayURL: linkedExit.relayURL,
+                    tunnelAuthKey: linkedExit.psk
+                )
+            ]
+        )
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = sanitizedFilename(from: credential.name) + "-vps-only.json"
+        panel.title = "Export VPS Setup JSON"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let enc = JSONEncoder()
+            enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try enc.encode(payload)
+            try data.write(to: url)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            transferMessage = "Exported VPS-only setup to \(url.lastPathComponent)."
+        } catch {
+            transferMessage = "Export failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func importProfilesFromJSON() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.title = "Import Profile JSON"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            let decoded = try JSONDecoder().decode(ProfileTransferPayload.self, from: data)
+            guard !decoded.profiles.isEmpty else {
+                transferMessage = "Import failed: no profiles in file."
+                return
+            }
+            var importedCount = 0
+            var pendingDraft: PendingVPSImportDraft? = nil
+            for p in decoded.profiles {
+                let trimmedScriptID = (p.scriptID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let trimmedAuthKey = p.authKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                let relayURL = p.tunnelRelayURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let tunnelKey = p.tunnelAuthKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let isVPSOnly = p.kind == .vpsOnly
+                    || (p.usesFullTunnel && trimmedScriptID.isEmpty && !relayURL.isEmpty && !tunnelKey.isEmpty)
+                if isVPSOnly {
+                    if trimmedAuthKey.isEmpty || relayURL.isEmpty || tunnelKey.isEmpty { continue }
+                    if pendingDraft == nil {
+                        pendingDraft = PendingVPSImportDraft(
+                            name: p.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Imported VPS" : p.name,
+                            authKey: trimmedAuthKey,
+                            tunnelRelayURL: relayURL,
+                            tunnelAuthKey: tunnelKey
+                        )
+                    }
+                    continue
+                }
+                if trimmedScriptID.isEmpty || trimmedAuthKey.isEmpty { continue }
+                let isFullTunnel = p.usesFullTunnel
+                let cloudflare = isFullTunnel ? false : p.usesCloudflare
+                let exitTag = isFullTunnel ? true : (p.usesExitTag && !cloudflare)
+                var linkedExitID: UUID? = nil
+                if isFullTunnel,
+                   !relayURL.isEmpty, !tunnelKey.isEmpty {
+                    let exit = ExitNodeProfile(
+                        name: "Tunnel \(p.name)",
+                        relayURL: relayURL,
+                        psk: tunnelKey
+                    )
+                    app.settings.exitNodeProfiles.append(exit)
+                    linkedExitID = exit.id
+                }
+                let credential = Credential(
+                    name: p.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Imported Profile" : p.name,
+                    scriptID: trimmedScriptID,
+                    authKey: trimmedAuthKey,
+                    usesCloudflare: cloudflare,
+                    usesFullTunnel: isFullTunnel,
+                    usesExitTag: exitTag,
+                    linkedExitNodeProfileID: linkedExitID
+                )
+                app.settings.credentials.append(credential)
+                app.settings.activeCredentialID = credential.id
+                importedCount += 1
+            }
+            if importedCount == 0 {
+                if pendingDraft == nil {
+                    transferMessage = "Import failed: no valid profiles found."
+                    return
+                }
+            } else {
+                app.saveSettings()
+                transferMessage = "Imported \(importedCount) profile(s) from \(url.lastPathComponent)."
+            }
+            if let pendingDraft {
+                pendingVPSImport = pendingDraft
+                if importedCount == 0 {
+                    transferMessage = "VPS setup imported. Paste Code.gs, deploy, then enter Deployment ID."
+                } else {
+                    transferMessage = "Imported \(importedCount) profile(s). Finish VPS import by entering Deployment ID."
+                }
+                return
+            }
+        } catch {
+            transferMessage = "Import failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func sanitizedFilename(from name: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let slug = String(name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" })
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return slug.isEmpty ? "shade-profile" : slug
     }
 }
 
@@ -495,10 +738,12 @@ private struct CredentialRow: View {
     let credential: Credential
     let isActive:   Bool
     var isLB:       Bool = false
+    var isSelectionDisabled: Bool = false
     let onSelect:   () -> Void
     let onToggleCloudflare: () -> Void
-    let onToggleExitTag: () -> Void
     let onEdit:     () -> Void
+    let onExport:   () -> Void
+    let onExportVPSOnly: () -> Void
     let onDelete:   () -> Void
 
     private var accent: Color {
@@ -527,6 +772,9 @@ private struct CredentialRow: View {
                             if credential.usesExitTag {
                                 TunnelTagBadge()
                             }
+                            if !credential.usesCloudflare && !credential.usesExitTag {
+                                GoogleBadge()
+                            }
                         }
                         Text(credential.scriptID.isEmpty ? "No Script ID set"
                              : (credential.scriptID.count > 26
@@ -539,50 +787,67 @@ private struct CredentialRow: View {
                 }
             }
             .buttonStyle(.plain)
+            .disabled(isSelectionDisabled)
+            .opacity(isSelectionDisabled ? 0.45 : 1)
 
-            HStack(spacing: 4) {
-                Button(action: onToggleCloudflare) {
-                    TagChipIcon(
-                        icon: "cloud.fill",
-                        tint: .orange,
-                        isEnabled: credential.usesCloudflare
-                    )
+            Menu {
+                if !credential.usesFullTunnel {
+                    Button {
+                        onToggleCloudflare()
+                    } label: {
+                        Label(
+                            credential.usesCloudflare ? "Remove Cloudflare tag" : "Assign Cloudflare tag",
+                            systemImage: credential.usesCloudflare ? "cloud.fill" : "cloud"
+                        )
+                    }
+
+                    Divider()
                 }
-                .buttonStyle(.plain)
-                .help(credential.usesCloudflare ? "Remove Cloudflare tag" : "Assign Cloudflare tag")
 
-                Button(action: onToggleExitTag) {
-                    TagChipIcon(
-                        icon: "arrow.turn.up.right",
-                        tint: .mint,
-                        isEnabled: credential.usesExitTag
-                    )
+                Button {
+                    onEdit()
+                } label: {
+                    Label("Edit profile", systemImage: "pencil")
                 }
-                .buttonStyle(.plain)
-                .disabled(true)
-                .opacity(credential.usesExitTag ? 1 : 0.45)
-                .help(
-                    credential.usesFullTunnel
-                        ? "Exit tag is required for full tunnel (Setup wizard)"
-                        : "Exit tag is assigned by the Setup wizard"
-                )
-            }
 
-            Button(action: onEdit) {
-                Image(systemName: "pencil")
-                    .font(.system(size: 12))
+                Button {
+                    onExport()
+                } label: {
+                    Label("Export JSON", systemImage: "square.and.arrow.up")
+                }
+
+                if credential.usesFullTunnel {
+                    Button {
+                        onExportVPSOnly()
+                    } label: {
+                        Label("Export VPS setup only", systemImage: "externaldrive.badge.plus")
+                    }
+                }
+
+                Divider()
+
+                Button(role: .destructive) {
+                    onDelete()
+                } label: {
+                    Label("Delete profile", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .padding(6)
+                    .frame(width: 26, height: 26)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(.white.opacity(0.05))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .stroke(.white.opacity(0.08), lineWidth: 1)
+                            )
+                    )
             }
-            .buttonStyle(.plain)
-
-            Button(action: onDelete) {
-                Image(systemName: "trash")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.red.opacity(0.7))
-                    .padding(6)
-            }
-            .buttonStyle(.plain)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .help("Profile actions")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -628,7 +893,7 @@ struct CredentialEditSheet: View {
                 Spacer()
                 Button("Save") { save() }
                     .buttonStyle(.plain)
-                    .foregroundStyle(canSave ? .purple : .secondary)
+                    .foregroundStyle(canSave ? .indigo : .secondary)
                     .disabled(!canSave)
             }
             .padding(.horizontal, 20)
@@ -923,15 +1188,7 @@ struct SystemProxyCard: View {
                 
                 Spacer(minLength: 0)
 
-                if app.settings.useSystemProxy && app.status.isRunning {
-                    Label {
-                        Text("Active")
-                    } icon: {
-                        Image(systemName: "checkmark.circle.fill")
-                    }
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.green)
-                }
+                // Intentionally no extra status text here when active.
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
@@ -1576,24 +1833,22 @@ struct CloudflareBadge: View {
     }
 }
 
-private struct TagChipIcon: View {
-    let icon: String
-    let tint: Color
-    let isEnabled: Bool
-
+struct GoogleBadge: View {
     var body: some View {
-        Image(systemName: icon)
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(isEnabled ? tint : .secondary.opacity(0.75))
-            .frame(width: 20, height: 20)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isEnabled ? tint.opacity(0.16) : .white.opacity(0.04))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(isEnabled ? tint.opacity(0.35) : .white.opacity(0.08), lineWidth: 0.8)
-                    )
-            )
+        HStack(spacing: 3) {
+            Image(systemName: "g.circle.fill")
+                .font(.system(size: 8, weight: .bold))
+            Text("Apps Script")
+                .font(.system(size: 9, weight: .semibold))
+        }
+        .foregroundStyle(.pink)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(
+            Capsule().fill(.pink.opacity(0.15))
+                .overlay(Capsule().stroke(.pink.opacity(0.35), lineWidth: 0.5))
+        )
+        .fixedSize()
     }
 }
 
@@ -1759,6 +2014,7 @@ private struct StrategyIconToggle: View {
     let onSelect: () -> Void
 
     private var accent: Color {
+        if strategy == .balanced { return .gray }
         if strategy.cfFacing { return .orange }
         return .purple
     }
@@ -1817,6 +2073,150 @@ struct LBFallbackBanner: View {
     }
 }
 
+private struct ImportedVPSFinalizeSheet: View {
+    @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var app: AppState
+    let draft: PendingVPSImportDraft
+    let onComplete: (Credential, ExitNodeProfile) -> Void
+
+    @State private var profileName: String = ""
+    @State private var deploymentID: String = ""
+    @State private var copied: Bool = false
+
+    private var renderedScript: String {
+        codeGS_FullTunnelTemplate
+            .replacingOccurrences(of: "<<SHADE_AUTH_KEY>>", with: jsStringLiteral(draft.authKey))
+            .replacingOccurrences(of: "<<TUNNEL_SERVER_URL>>", with: jsStringLiteral(draft.tunnelRelayURL))
+            .replacingOccurrences(of: "<<TUNNEL_PSK>>", with: jsStringLiteral(draft.tunnelAuthKey))
+    }
+
+    private var canSave: Bool {
+        !deploymentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("Finish VPS Import")
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+                Button("Save") { saveImportedProfile() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(canSave ? .indigo : .secondary)
+                    .disabled(!canSave)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+
+            Divider().opacity(0.3)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("1) Paste this Code.gs into a new Apps Script project and deploy as Web app (Anyone).")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack {
+                            Text("Code.gs (from imported VPS setup)")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(renderedScript, forType: .string)
+                                copied = true
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+                            } label: {
+                                Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(copied ? .green : .indigo)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.white.opacity(0.04))
+
+                        Divider().opacity(0.3)
+
+                        ScrollView {
+                            Text(renderedScript)
+                                .font(.system(size: 11, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(12)
+                        }
+                        .scrollIndicators(.never)
+                        .frame(maxHeight: 220)
+                    }
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(.black.opacity(0.35))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(.white.opacity(0.08), lineWidth: 1)
+                            )
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                    Text("2) Paste the Deployment ID below to complete profile import.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+
+                    EditField(label: "PROFILE NAME", hint: "optional") {
+                        TextField(draft.name, text: $profileName)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12))
+                            .editFieldStyle()
+                    }
+
+                    EditField(label: "DEPLOYMENT ID", hint: "AKfycb…") {
+                        TextField("AKfycb…", text: $deploymentID)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12, design: .monospaced))
+                            .editFieldStyle()
+                    }
+                }
+                .padding(20)
+            }
+            .scrollIndicators(.never)
+        }
+        .frame(width: 560, height: 620)
+    }
+
+    private func saveImportedProfile() {
+        let trimmedName = profileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedName = trimmedName.isEmpty ? draft.name : trimmedName
+        let exit = ExitNodeProfile(
+            name: "Tunnel \(resolvedName)",
+            relayURL: draft.tunnelRelayURL,
+            psk: draft.tunnelAuthKey
+        )
+        let cred = Credential(
+            name: resolvedName,
+            scriptID: deploymentID.trimmingCharacters(in: .whitespacesAndNewlines),
+            authKey: draft.authKey,
+            usesCloudflare: false,
+            usesFullTunnel: true,
+            usesExitTag: true,
+            linkedExitNodeProfileID: exit.id
+        )
+        onComplete(cred, exit)
+        dismiss()
+    }
+
+    private func jsStringLiteral(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+}
+
 extension View {
     func editFieldStyle() -> some View {
         self
@@ -1832,4 +2232,33 @@ extension View {
                     )
             )
     }
+}
+
+private struct ProfileTransferPayload: Codable {
+    var version: Int
+    var profiles: [ProfileTransferProfile]
+}
+
+private struct ProfileTransferProfile: Codable {
+    enum Kind: String, Codable {
+        case fullProfile = "full_profile"
+        case vpsOnly = "vps_only"
+    }
+    var kind: Kind?
+    var name: String
+    var scriptID: String?
+    var authKey: String
+    var usesCloudflare: Bool
+    var usesExitTag: Bool
+    var usesFullTunnel: Bool
+    var tunnelRelayURL: String?
+    var tunnelAuthKey: String?
+}
+
+private struct PendingVPSImportDraft: Identifiable {
+    var id: UUID = UUID()
+    var name: String
+    var authKey: String
+    var tunnelRelayURL: String
+    var tunnelAuthKey: String
 }
