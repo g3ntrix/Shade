@@ -599,9 +599,9 @@ private struct VPSExitNodeSetupView: View {
             title: "Install the tunnel node on your VPS",
             body:
                 """
-                1) Enter your VPS public IP or hostname below.
+                1) Enter your VPS IP or hostname below.
 
-                2) Paste the install script on the VPS (Docker required).
+                2) Paste the install script on the VPS (Docker will be installed).
                    It will pick a free port in \(TunnelPorts.scanStart) to \(TunnelPorts.scanEnd) and print TUNNEL_PORT.
 
                 3) Save the printed TUNNEL_PORT value.
@@ -897,7 +897,7 @@ private struct VPSExitNodeSetupView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 if step == 1 {
-                    TextField("VPS public IP or hostname (e.g. 203.0.113.50)", text: $serverIP)
+                    TextField("VPS IP or hostname (e.g. 203.0.113.50)", text: $serverIP)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12, design: .monospaced))
 
