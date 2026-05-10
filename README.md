@@ -1,6 +1,6 @@
 # Shade
 
-**Shade** is a DPI-resistant macOS proxy client built for censored networks. It combines a high-performance Python core with a native SwiftUI app and routes traffic through **Google Apps Script** and **tunnel-node** transports for reliable browsing and app connectivity.
+**Shade** is a Mac app that helps you browse and use apps more reliably when your network is slow, picky, or blocking things. Everything is designed to be **guided**: you follow steps in the app instead of editing files by hand.
 
 <table align="center">
   <tr>
@@ -23,49 +23,34 @@
 
 [English] | [فارسی](README_FA.md)
 
-## Key Features
+---
 
-- **Easy Setup**: Interactive setup wizard guides you step by step and writes your config automatically.
-- **Full Tunnel Mode**: End-to-end tunnel mode for broader app compatibility, including SOCKS clients on other devices.
-- **Share & Import Profiles**: Export your working profile and import it on another device without manual re-entry.
-- **DPI-Resistant Transport**: Uses Google-fronted relay paths for restrictive networks.
-- **Smart Load Balancing**: Distributes relay traffic across multiple deployments for speed and stability.
-- **Native macOS Experience**: SwiftUI dashboard, setup flow, and menu bar controls with live status.
-- **SOCKS5 Support**: Improved SOCKS handling for real-world mobile apps and browser traffic.
-- **IP Scanner**: Built-in scanner to find the best reachable Google frontend IP.
+## What you get
 
-## Getting Started
-
-1. **Open Setup Wizard** in Shade and choose your setup method.
-2. **Deploy Relay**:
-   - Use `apps_script/Code.gs` for standard mode.
-   - Use `apps_script/CodeFull.gs` for standard + full tunnel mode.
-3. **Configure Automatically**: wizard validates inputs and writes config for you.
-4. **Connect**: start Shade and enable system proxy if needed.
-
-## Sharing & Importing Profiles
-
-- Use the app's share/export flow to generate a setup-ready profile from a working configuration.
-- Import that profile on another device to apply script IDs, keys, and related settings quickly.
-- This is the fastest way to replicate a known-good setup across devices and avoid manual mistakes.
-
-## Setup Wizard
-
-- Interactive, guided, and beginner-friendly.
-- Validates server and relay inputs before saving.
-- Handles config creation so users do not need to manually edit JSON for common paths.
-- Includes improved VPS lifecycle guidance and cleanup instructions.
-
-## Technical Snapshot
-
-- **System Requirement**: macOS 13 or newer.
-- **Local Ports**: HTTP (`1080`), SOCKS5 (`8080`) by default.
-- **Architecture**: Universal binary with native support for Apple Silicon and Intel.
-- **Security**: TLS-protected transport through Google-fronted relay paths.
+- **A setup wizard** — Shade asks simple questions and builds your settings for you.
+- **One place to turn it on or off** — menu bar controls and a clear dashboard so you always know if Shade is active.
+- **“Full tunnel” when you need it** — a stronger mode for apps that are fussy about how traffic leaves your Mac.
+- **Share your working setup** — export a profile from a Mac that already works and import it on another Mac (or share with someone you trust) so nobody has to retype long settings.
+- **Phones and tablets** — point a SOCKS app (for example **v2box** on iPhone or Android) at your Mac’s Shade connection when you want that device to use the same path.
+- **Stays responsive** — Shade spreads work across multiple paths so one slow hop doesn’t ruin the whole session.
+- **Optional speed check** — when the app offers it, you can run a quick test to find a snappier connection on difficult networks.
 
 ---
 
-## Support Development
+## How to use Shade (simple path)
+
+1. **Install Shade** — download the Mac app from **[GitHub Releases](https://github.com/g3ntrix/Shade/releases)**. You need **macOS 13 or newer** (Apple Silicon and Intel are both supported).
+2. **Open the app** and start the **Setup Wizard**. Read each screen; it explains what to enter and checks that things look right before saving.
+3. **Finish the wizard** — Shade writes your configuration automatically. You shouldn’t need to open config files for a normal setup.
+4. **Connect** from the dashboard or menu bar. If the wizard suggested turning on the system proxy, do that when you’re ready to route your Mac’s traffic through Shade.
+5. **Optional:** turn on **full tunnel** mode in the app if some apps still won’t connect the usual way.
+6. **Optional:** use **Share / Export** to create a profile, then **Import** it on another Mac to copy the same working setup in a few taps.
+
+If anything is unclear, use the **in-app setup guide** — it’s there to walk you through the same flow with pictures and reminders.
+
+---
+
+## Support development
 
 If Shade helps you stay connected, consider supporting the project:
 
