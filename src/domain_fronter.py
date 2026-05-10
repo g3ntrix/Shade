@@ -17,6 +17,7 @@ import logging
 import re
 import socket
 import ssl
+import struct
 import tempfile
 import time
 from dataclasses import dataclass
@@ -1336,6 +1337,107 @@ class DomainFronter:
         if not self._script_ids:
             return ""
         return self._script_id_for_key()
+
+    # ── DNS short-circuit ───────────────────────────────────────────
+    # iOS systemwide proxying (V2Box etc.) generates a flood of UDP/53
+    # datagrams. Routing every one through the per-session UDP poll path
+    # saturates Apps Script concurrency, all polls time out, and DNS
+    # silently breaks for the client. Instead, intercept port-53 UDP in
+    # the SOCKS relay and call this helper, which runs each query as a
+    # single short TCP DNS request through the existing tunnel-node —
+    # one connect_data + close per query, no long-running session.
+    # Public DNS resolvers (Cloudflare, Quad9) answer; the VPS is the
+    # exit so the user's ISP never sees the lookup.
+    _DNS_RESOLVERS: tuple[tuple[str, int], ...] = (
+        ("1.1.1.1", 53),
+        ("9.9.9.9", 53),
+    )
+    _DNS_QUERY_TIMEOUT = 4.0
+
+    async def dns_query(self, query: bytes, script_id: str = "") -> bytes | None:
+        """Resolve a DNS UDP query by running TCP DNS through the tunnel.
+
+        ``query`` is the raw DNS message (no length prefix). Returns the
+        DNS response bytes (also no length prefix), or None if every
+        upstream resolver failed.
+        """
+        if len(query) < 12:
+            return None
+        sid_hint = script_id or self._script_id_for_key()
+        framed = struct.pack("!H", len(query)) + query
+
+        for upstream_host, upstream_port in self._DNS_RESOLVERS:
+            sid: str | None = None
+            try:
+                try:
+                    resp = await asyncio.wait_for(
+                        self._tunnel_request(
+                            t="connect_data", sid_hint=sid_hint,
+                            host=upstream_host, port=upstream_port,
+                            data=framed,
+                        ),
+                        timeout=self._DNS_QUERY_TIMEOUT,
+                    )
+                except Exception as e:
+                    log.debug("DNS connect %s:%d failed: %s", upstream_host, upstream_port, e)
+                    continue
+
+                if resp.get("e"):
+                    log.debug("DNS connect %s rejected: %s", upstream_host, resp.get("e"))
+                    continue
+                sid = resp.get("sid")
+                if not sid:
+                    continue
+
+                buf = b""
+                d_initial = resp.get("d")
+                if d_initial:
+                    try:
+                        buf += base64.b64decode(d_initial)
+                    except Exception:
+                        pass
+
+                deadline = time.monotonic() + self._DNS_QUERY_TIMEOUT
+                while True:
+                    if len(buf) >= 2:
+                        msg_len = struct.unpack("!H", buf[:2])[0]
+                        if len(buf) >= 2 + msg_len:
+                            return buf[2:2 + msg_len]
+                    if resp.get("eof"):
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    try:
+                        resp = await asyncio.wait_for(
+                            self._tunnel_request(
+                                t="data", sid_hint=sid_hint, sid=sid,
+                            ),
+                            timeout=remaining,
+                        )
+                    except Exception as e:
+                        log.debug("DNS poll %s failed: %s", upstream_host, e)
+                        break
+                    if resp.get("e"):
+                        break
+                    d = resp.get("d")
+                    if d:
+                        try:
+                            buf += base64.b64decode(d)
+                        except Exception:
+                            pass
+            finally:
+                if sid:
+                    try:
+                        await asyncio.wait_for(
+                            self._tunnel_request(
+                                t="close", sid_hint=sid_hint, sid=sid,
+                            ),
+                            timeout=1.0,
+                        )
+                    except Exception:
+                        pass
+        return None
 
     async def _post_script_json(self, payload: dict, sid: str) -> dict:
         path = self._exec_path_for_sid(sid)

@@ -117,6 +117,26 @@ def _parse_socks5_udp_frame(buf: bytes) -> Optional[tuple[int, bytes, str, int, 
     return (atyp, bytes(addr_bytes), host, port, payload)
 
 
+async def _serve_dns(fronter, query: bytes, atyp: int, addr_bytes: bytes,
+                     port: int, transport: asyncio.DatagramTransport,
+                     peer: tuple[str, int], script_id: str) -> None:
+    """Resolve a single DNS UDP query via the TCP tunnel and reply in
+    SOCKS5 §7 framing. Echoes the original DST atyp/addr/port back so
+    iOS clients match the response to the request they sent."""
+    try:
+        response = await fronter.dns_query(query, script_id=script_id)
+    except Exception as e:
+        log.debug("DNS resolve raised: %s", e)
+        return
+    if not response or transport.is_closing():
+        return
+    frame = _build_socks5_udp_frame(atyp, addr_bytes, port, response)
+    try:
+        transport.sendto(frame, peer)
+    except Exception as e:
+        log.debug("DNS reply sendto %s failed: %s", peer, e)
+
+
 class _Session:
     """Per-target state. The same target keeps the same sid and the
     same SOCKS5 reply atyp/addr (so downlink frames echo the address
@@ -399,6 +419,22 @@ async def handle_udp_associate(
             atyp, addr_bytes, host, port, payload = parsed
             if len(payload) > MAX_UDP_PAYLOAD_BYTES:
                 continue
+
+            # DNS short-circuit. Resolve port-53 UDP queries by running
+            # TCP DNS through the tunnel against a public resolver
+            # (1.1.1.1, 9.9.9.9). The local network's DNS is censored, but
+            # the VPS exits cleanly — the per-session UDP poll path can't
+            # keep up with iOS systemwide DNS volume (Apps Script
+            # concurrency starves), so we don't use it for DNS.
+            if port == 53 and len(payload) >= 12 and locked_peer is not None:
+                asyncio.create_task(
+                    _serve_dns(
+                        fronter, payload, atyp, addr_bytes, port,
+                        transport, locked_peer, script_id,
+                    )
+                )
+                continue
+
             target_key = (atyp, addr_bytes, port)
             sess = sessions.get(target_key)
             if sess is None:
