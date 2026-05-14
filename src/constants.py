@@ -73,9 +73,9 @@ WARM_POOL_COUNT         = 30
 
 
 # ── Batch windows ─────────────────────────────────────────────────────────
-BATCH_WINDOW_MICRO      = 0.005   # 5 ms
-BATCH_WINDOW_MACRO      = 0.050   # 50 ms
-BATCH_MAX               = 50
+BATCH_WINDOW_MICRO      = 0.015   # 15 ms: captures short asset bursts
+BATCH_WINDOW_MACRO      = 0.120   # 120 ms: balances batching and latency
+BATCH_MAX               = 64      # enough headroom for browser fan-out waves
 
 
 # ── Fan-out relay (parallel Apps Script instances) ────────────────────────
@@ -189,6 +189,28 @@ SNI_REWRITE_SUFFIXES: tuple[str, ...] = (
     "googletagservices.com",
     "fonts.googleapis.com",
     "script.google.com",
+    "myaccount.google.com",
+    "takeout.google.com",
+    "takeout-download.usercontent.google.com",
+)
+
+
+# ── Relay URL patterns ───────────────────────────────────────────────────
+# URL path prefixes forced through the Apps Script relay even when the host
+# would normally use SNI-rewrite. Format: "host/path/prefix" (no scheme).
+# Can be extended via config.json "relay_url_patterns" key.
+RELAY_URL_PATTERNS: tuple[str, ...] = (
+    "youtube.com/youtubei/",
+)
+
+
+# ── Bypass hosts (direct, no MITM/relay) ────────────────────────────────
+# Applied when bypass_hosts is omitted from config.json.
+DEFAULT_BYPASS_HOSTS: tuple[str, ...] = (
+    "localhost",
+    ".local",
+    ".lan",
+    ".home.arpa",
 )
 
 
@@ -208,7 +230,7 @@ TRACE_HOST_SUFFIXES: tuple[str, ...] = (
 STATIC_EXTS: tuple[str, ...] = (
     ".css", ".js", ".mjs", ".woff", ".woff2", ".ttf", ".eot",
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico",
-    ".mp3", ".mp4", ".webm", ".wasm", ".avif",
+    ".mp3", ".mp4", ".webm", ".wasm", ".avif", ".json", ".map",
 )
 LARGE_FILE_EXTS = frozenset({
     ".bin",

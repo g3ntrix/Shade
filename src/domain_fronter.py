@@ -93,6 +93,9 @@ def _build_sni_pool(front_domain: str, overrides: list | None) -> list[str]:
 class DomainFronter:
     _STATIC_EXTS = STATIC_EXTS
     _H2_FAILURE_COOLDOWN = 60.0
+    # googlevideo flows are large/CPU-heavy; keep them on the direct SNI-rewrite
+    # path even when exit_node.mode=full, so the exit node isn't overwhelmed.
+    _EXIT_NODE_BYPASS_SUFFIXES = ("googlevideo.com",)
     _H2_FAILURE_THRESHOLD = 3
     _DOWNLOAD_STREAM_COOLDOWN = 300.0
     _COALESCE_VARY_HEADERS = (
@@ -2075,11 +2078,14 @@ class DomainFronter:
     def _url_uses_exit_node(self, url: str) -> bool:
         if not self._exit_node_active:
             return False
-        if self._exit_mode == "full":
-            return True
         host = self._hostname_for_exit_match(url)
         if not host:
             return False
+        if any(host == s or host.endswith("." + s)
+               for s in self._EXIT_NODE_BYPASS_SUFFIXES):
+            return False
+        if self._exit_mode == "full":
+            return True
         for pat in self._exit_hosts:
             if host == pat or host.endswith("." + pat):
                 return True

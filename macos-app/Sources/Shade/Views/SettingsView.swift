@@ -25,14 +25,15 @@ struct SettingsView: View {
 
                 googleIPScannerSection
 
-                let pairedCardHeight: CGFloat = 160
+                // Advanced sets the row's natural height; TLS uses
+                // expandToFitParent so its card stretches to match.
                 HStack(alignment: .top, spacing: 14) {
                     advancedSection
                         .frame(minWidth: 0, maxWidth: .infinity, alignment: .top)
                     certificateSection
-                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .top)
+                        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
-                .frame(maxWidth: .infinity, minHeight: pairedCardHeight, maxHeight: pairedCardHeight, alignment: .top)
+                .fixedSize(horizontal: false, vertical: true)
 
                 footer
             }
@@ -122,7 +123,7 @@ struct SettingsView: View {
     }
 
     private var advancedSection: some View {
-        SettingsCard(title: "Advanced", icon: "slider.horizontal.3", expandToFitParent: true) {
+        SettingsCard(title: "Advanced", icon: "slider.horizontal.3") {
             VStack(spacing: 12) {
                 HStack {
                     Text("Log Level")
@@ -157,6 +158,30 @@ struct SettingsView: View {
                         set: { new in
                             guard app.settings.verifySSL != new else { return }
                             savePartial { $0.verifySSL = new }
+                        }
+                    ))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                }
+
+                Divider().opacity(0.1)
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Ad Blocker")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text("PersianBlocker hosts list")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary.opacity(0.7))
+                    }
+                    Spacer()
+                    Toggle("", isOn: Binding(
+                        get: { app.settings.adblockEnabled },
+                        set: { new in
+                            guard app.settings.adblockEnabled != new else { return }
+                            savePartial { $0.adblockEnabled = new }
                         }
                     ))
                         .labelsHidden()

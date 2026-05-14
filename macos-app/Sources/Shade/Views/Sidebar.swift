@@ -30,7 +30,19 @@ struct Sidebar: View {
                 .padding(.bottom, 16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.ultraThinMaterial)
+        // Static gradient instead of .ultraThinMaterial: the material requires
+        // a fresh real-time blur pass every frame, which is what causes the
+        // stutter you see when reopening the sidebar (the column animates in
+        // before the blur catches up). A cheap gradient renders instantly.
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(.sRGB, red: 0.09, green: 0.10, blue: 0.14, opacity: 1),
+                    Color(.sRGB, red: 0.06, green: 0.07, blue: 0.10, opacity: 1)
+                ],
+                startPoint: .top, endPoint: .bottom
+            )
+        )
     }
 }
 

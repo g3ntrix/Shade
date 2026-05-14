@@ -235,6 +235,7 @@ struct AppSettings: Codable, Equatable {
     var enableAppLogs: Bool = false
     var youtubeViaRelay: Bool = false
     var useFullTunnel: Bool = false
+    var adblockEnabled: Bool = true
 
     // ── Exit node (Apps Script → exit relay → origin) ───────────────────────
     /// Settings: allow exit relays; when off the core omits exit_node and related controls are disabled.
@@ -278,7 +279,7 @@ struct AppSettings: Codable, Equatable {
         case credentials, activeCredentialID, enableLoadBalancing, lbStrategy
         case listenHost, listenPort, socksPort
         case frontDomain, googleIP, verifySSL, logLevel
-        case useSystemProxy, enableAppLogs, youtubeViaRelay
+        case useSystemProxy, enableAppLogs, youtubeViaRelay, adblockEnabled
         case useFullTunnel
         case exitRoutingAllowed, exitRelayActive
         case legacyExitRelayActive = "valRelayEnabled"
@@ -321,6 +322,7 @@ struct AppSettings: Codable, Equatable {
         useSystemProxy       = (try? c.decode(Bool.self,       forKey: .useSystemProxy))       ?? false
         enableAppLogs        = (try? c.decode(Bool.self,       forKey: .enableAppLogs))        ?? false
         youtubeViaRelay      = (try? c.decode(Bool.self,       forKey: .youtubeViaRelay))      ?? false
+        adblockEnabled       = (try? c.decode(Bool.self,       forKey: .adblockEnabled))       ?? true
         useFullTunnel        = (try? c.decode(Bool.self,       forKey: .useFullTunnel))        ?? false
         let legacyExitOn = (try? c.decode(Bool.self, forKey: .exitNodeEnabled)) ?? false
         exitRoutingAllowed = (try? c.decode(Bool.self, forKey: .exitRoutingAllowed)) ?? legacyExitOn
@@ -376,6 +378,7 @@ struct AppSettings: Codable, Equatable {
         try c.encode(useSystemProxy,      forKey: .useSystemProxy)
         try c.encode(enableAppLogs,       forKey: .enableAppLogs)
         try c.encode(youtubeViaRelay,     forKey: .youtubeViaRelay)
+        try c.encode(adblockEnabled,      forKey: .adblockEnabled)
         try c.encode(useFullTunnel,       forKey: .useFullTunnel)
         try c.encode(exitRoutingAllowed, forKey: .exitRoutingAllowed)
         try c.encode(exitRelayActive, forKey: .exitRelayActive)
@@ -387,6 +390,73 @@ struct AppSettings: Codable, Equatable {
         try c.encode(enableLoadBalancing, forKey: .enableLoadBalancing)
         try c.encode(lbStrategy,          forKey: .lbStrategy)
         // lbFallbackActive is NOT encoded — it resets to false on every app launch.
+    }
+
+    // MARK: - Selection reconciliation
+
+    /// Single source of truth for "is LB on" — derive it from the selection
+    /// count instead of treating it as a separately-mutated flag. Call this
+    /// after any change to `isEnabledForLB` (row clicks, select-all,
+    /// deselect-all, profile add/remove). Result:
+    ///   0 selected → LB off, activeCredentialID left alone
+    ///   1 selected → LB off, that profile becomes active
+    ///   2+         → LB on, active stays in the selection (or moves to first)
+    ///
+    /// Full-tunnel profiles are exclusive: if any selected profile uses full
+    /// tunnel, we collapse to a single selection (the active one) and force
+    /// LB off, because the core runs full-tunnel mode only against one VPS.
+    mutating func reconcileSelectionState() {
+        let selected = credentials.filter(\.isEnabledForLB)
+        let selectedFullTunnel = selected.filter(\.usesFullTunnel)
+
+        if let tunnel = selectedFullTunnel.first {
+            for i in credentials.indices {
+                credentials[i].isEnabledForLB = (credentials[i].id == tunnel.id)
+            }
+            enableLoadBalancing = false
+            activeCredentialID = tunnel.id
+            return
+        }
+
+        let count = selected.count
+        if count >= 2 {
+            enableLoadBalancing = true
+            if let activeID = activeCredentialID,
+               selected.contains(where: { $0.id == activeID }) {
+                // active is in the pool — leave it
+            } else {
+                activeCredentialID = selected.first?.id
+            }
+        } else if count == 1 {
+            enableLoadBalancing = false
+            activeCredentialID = selected.first?.id
+        } else {
+            enableLoadBalancing = false
+            // 0 selected: leave activeCredentialID untouched (could be a
+            // user mid-flow toggling things off and on).
+        }
+
+        // If the current strategy can't be satisfied by the new selection
+        // (e.g. user deselected all CF profiles while strategy was cfOnly),
+        // fall back to .balanced so the strategy picker stays consistent
+        // with the row picker.
+        let nonTunnel = credentials.filter { $0.isEnabledForLB && !$0.usesFullTunnel }
+        let hasCF      = nonTunnel.contains(where: \.usesCloudflare)
+        let hasNonCF   = nonTunnel.contains { !$0.usesCloudflare && !$0.usesExitTag }
+        let hasExitTag = nonTunnel.contains(where: \.usesExitTag)
+        let satisfied: Bool
+        switch lbStrategy {
+        case .balanced:        satisfied = !nonTunnel.isEmpty
+        case .cfPreferred:     satisfied = hasCF
+        case .normalPreferred: satisfied = hasNonCF
+        case .exitPreferred:   satisfied = hasExitTag
+        case .cfOnly:          satisfied = hasCF
+        case .normalOnly:      satisfied = hasNonCF
+        case .exitOnly:        satisfied = hasExitTag
+        }
+        if !satisfied {
+            lbStrategy = .balanced
+        }
     }
 
     // MARK: - Effective LB pool
@@ -551,7 +621,8 @@ struct AppSettings: Codable, Equatable {
             "socks5_port":    socksPort,
             "log_level":      logLevel.rawValue,
             "verify_ssl":     verifySSL,
-            "youtube_via_relay": youtubeViaRelay
+            "youtube_via_relay": youtubeViaRelay,
+            "adblock_enabled":   adblockEnabled
         ]
         // Exit relay path is retired in the current UX flow.
         dict = dict.compactMapValues { value -> Any? in

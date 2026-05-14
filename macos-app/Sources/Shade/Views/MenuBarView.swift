@@ -156,11 +156,32 @@ struct MenuBarView: View {
             .padding(.horizontal, 6)
         }
         .frame(width: 270)
+        // Match the main window's dark navy/teal palette. Static gradient
+        // (no aurora animation in a tiny popover) plus a soft blue tint in
+        // the top-left for depth, then a dark wash on top so text stays
+        // legible — same recipe as ContentView's BackgroundGradient.
         .background(
-            VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
-                .ignoresSafeArea()
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        Color(.sRGB, red: 0.05, green: 0.06, blue: 0.09, opacity: 1),
+                        Color(.sRGB, red: 0.07, green: 0.08, blue: 0.12, opacity: 1)
+                    ],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                )
+                RadialGradient(
+                    colors: [
+                        Color(.sRGB, red: 0.18, green: 0.28, blue: 0.45, opacity: 0.22),
+                        .clear
+                    ],
+                    center: .topLeading,
+                    startRadius: 0,
+                    endRadius: 260
+                )
+                Color.black.opacity(0.15)
+            }
+            .ignoresSafeArea()
         )
-        .background(Color.black.opacity(0.15))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.white.opacity(0.08), lineWidth: 1)

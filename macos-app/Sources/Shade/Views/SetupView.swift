@@ -714,7 +714,7 @@ private struct VPSExitNodeSetupView: View {
 
     private var serverInputValidationMessage: String? {
         let t = trimmedVPSInput
-        if t.isEmpty { return nil }
+        if t.isEmpty { return "VPS IP or hostname is required." }
         return isServerInputValid ? nil : "Enter a valid IPv4 or hostname (optional :port). Do not include http:// or path."
     }
 
@@ -912,7 +912,8 @@ private struct VPSExitNodeSetupView: View {
         let sid = deploymentIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let auth = relayAuthKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         let tunnelKey = tunnelAuthKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard sid.count >= 8, !auth.isEmpty, !tunnelKey.isEmpty else { return }
+        guard sid.count >= 8, !auth.isEmpty, !tunnelKey.isEmpty,
+              !trimmedVPSInput.isEmpty, isServerInputValid else { return }
         let baseURL = normalizedTunnelBaseURL
         let tunnelProf = ExitNodeProfile(
             name: "Tunnel \(targetHostLabel)",

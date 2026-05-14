@@ -254,6 +254,32 @@ class ProxyServer:
         self._block_hosts  = self._load_host_rules(config.get("block_hosts", []))
         self._bypass_hosts = self._load_host_rules(config.get("bypass_hosts", []))
 
+        # adblock: enabled by default with bundled PersianBlocker list.
+        # Config keys:
+        #   adblock_enabled  — bool, default True
+        #   adblock_lists    — list of URLs or local paths; if absent and
+        #                      adblock is enabled, the bundled default is used
+        adblock_enabled = bool(config.get("adblock_enabled", True))
+        configured = [str(u).strip() for u in config.get("adblock_lists", []) if u]
+        if adblock_enabled and not configured:
+            from adblock import bundled_default_path
+            default_path = bundled_default_path()
+            if default_path:
+                configured = [default_path]
+        self._adblock_urls: list[str] = configured if adblock_enabled else []
+        if self._adblock_urls:
+            try:
+                from adblock import load_all
+                _ab_domains = load_all(self._adblock_urls)
+                self._adblock_hosts = self._load_host_rules(_ab_domains)
+                log.info("Adblock: %d domains active from %d list(s)",
+                         len(_ab_domains), len(self._adblock_urls))
+            except Exception as exc:
+                log.warning("Adblock: load failed: %s", exc)
+                self._adblock_hosts = self._load_host_rules([])
+        else:
+            self._adblock_hosts = self._load_host_rules([])
+
         # Route YouTube through the relay when requested; the Google frontend
         # IP can enforce SafeSearch on the SNI-rewrite path.
         if config.get("youtube_via_relay", False):
@@ -356,7 +382,8 @@ class ProxyServer:
         return False
 
     def _is_blocked(self, host: str) -> bool:
-        return self._host_matches_rules(host, self._block_hosts)
+        return (self._host_matches_rules(host, self._block_hosts)
+                or self._host_matches_rules(host, self._adblock_hosts))
 
     def _is_bypassed(self, host: str) -> bool:
         return self._host_matches_rules(host, self._bypass_hosts)
@@ -485,11 +512,27 @@ class ProxyServer:
                         await asyncio.gather(
                             http_srv.serve_forever(),
                             socks_srv.serve_forever(),
+                            self._refresh_adblock_lists(),
                         )
                 else:
-                    await http_srv.serve_forever()
+                    await asyncio.gather(
+                        http_srv.serve_forever(),
+                        self._refresh_adblock_lists(),
+                    )
         except asyncio.CancelledError:
             raise
+
+    async def _refresh_adblock_lists(self) -> None:
+        """Background task: re-download stale adblock lists and hot-swap rules."""
+        if not self._adblock_urls:
+            return
+        try:
+            from adblock import refresh_all
+            def _update(domains: list[str]) -> None:
+                self._adblock_hosts = self._load_host_rules(domains)
+            await refresh_all(self._adblock_urls, callback=_update)
+        except Exception as exc:
+            log.warning("Adblock: background refresh failed: %s", exc)
 
     async def stop(self):
         """Shut down all listeners and release relay resources."""
