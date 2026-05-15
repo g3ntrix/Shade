@@ -33,6 +33,7 @@
 - **Share your working setup** — export a profile from a Mac that already works and import it on another Mac (or share with someone you trust) so nobody has to retype long settings.
 - **Phones and tablets** — point a SOCKS app (for example **v2box** on iPhone or Android) at your Mac’s Shade connection when you want that device to use the same path.
 - **Stays responsive** — Shade spreads work across multiple paths so one slow hop doesn’t ruin the whole session.
+- **Built-in ad blocking** — blocks known ad and tracker domains through the proxy (on by default; turn off in **Settings** if a site misbehaves).
 - **Optional speed check** — when the app offers it, you can run a quick test to find a snappier connection on difficult networks.
 
 ---
